@@ -37,7 +37,7 @@ object PathRetarget {
 
             val prefix = remaining.subList(0, i)
             val spliced = PathResult(
-                nodes = PathSimplifier.simplify(prefix + suffix.nodes),
+                nodes = PathStringPuller.pull(world, prefix + suffix.nodes),
                 complete = true,
                 goal = suffix.goal,
             )
@@ -108,7 +108,7 @@ object PathRetarget {
             }
 
             path = PathResult(
-                nodes = PathSimplifier.simplify(nodes.subList(0, i) + suffix.nodes),
+                nodes = PathStringPuller.pull(world, nodes.subList(0, i) + suffix.nodes),
                 complete = true,
                 goal = suffix.goal,
             )

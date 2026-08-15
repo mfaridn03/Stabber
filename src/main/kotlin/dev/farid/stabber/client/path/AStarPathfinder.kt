@@ -138,6 +138,17 @@ object AStarPathfinder {
             return PathResult(reconstruct(bestPartial), complete = false, goal = goal.pos)
         }
 
+        private fun reconstruct(end: PathNode): List<PathNode> {
+            val nodes = ArrayList<PathNode>()
+            var cursor: PathNode? = end
+            while (cursor != null) {
+                nodes.add(PathNode(cursor.pos.immutable(), cursor.floorY, incoming = cursor.incoming))
+                cursor = cursor.parent
+            }
+            nodes.reverse()
+            return PathStringPuller.pull(level, nodes)
+        }
+
         private fun expand(current: PathNode) {
             var sweeps = 0
             var i = 0
@@ -304,17 +315,6 @@ object AStarPathfinder {
             if (standing != null) standCache.put(packed, standing)
             return standing
         }
-    }
-
-    private fun reconstruct(end: PathNode): List<PathNode> {
-        val nodes = ArrayList<PathNode>()
-        var cursor: PathNode? = end
-        while (cursor != null) {
-            nodes.add(PathNode(cursor.pos.immutable(), cursor.floorY, incoming = cursor.incoming))
-            cursor = cursor.parent
-        }
-        nodes.reverse()
-        return PathSimplifier.simplify(nodes)
     }
 
     private fun chebyshev(a: BlockPos, b: BlockPos): Int {
