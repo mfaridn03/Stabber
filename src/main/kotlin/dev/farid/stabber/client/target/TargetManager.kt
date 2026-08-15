@@ -16,6 +16,10 @@ object TargetManager {
         target = if (isTarget(entity)) null else entity
     }
 
+    fun assign(entity: LivingEntity) {
+        target = entity
+    }
+
     fun clear() {
         target = null
     }
