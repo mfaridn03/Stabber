@@ -51,7 +51,7 @@ object PathfindingController {
 
     private fun handleInput(minecraft: Minecraft) {
         while (StabberKeys.selectTarget.consumeClick()) {
-            if (minecraft.screen != null) continue
+            if (minecraft.gui.screen() != null) continue
             val picked = minecraft.crosshairPickEntity as? LivingEntity ?: continue
             if (picked === minecraft.player) continue
             TargetManager.select(picked)
