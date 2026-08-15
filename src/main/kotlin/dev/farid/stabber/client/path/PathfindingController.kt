@@ -3,49 +3,43 @@ package dev.farid.stabber.client.path
 import dev.farid.stabber.client.StabberKeys
 import dev.farid.stabber.client.target.TargetManager
 import net.minecraft.client.Minecraft
-import net.minecraft.core.BlockPos
+import net.minecraft.network.chat.Component
 import net.minecraft.world.entity.LivingEntity
 
 object PathfindingController {
-    const val REPATH_INTERVAL = 10
-
     var path: PathResult = PathResult.EMPTY
         private set
 
-    private var ticksUntilRepath = 0
-    private var lastGoal: BlockPos? = null
-    private var lastStart: BlockPos? = null
+    private var hadTarget = false
 
     fun tick(minecraft: Minecraft) {
         handleInput(minecraft)
 
         val level = minecraft.level
         val player = minecraft.player
-        if (level == null || player == null || !TargetManager.validate(level)) {
+        if (level == null || player == null) {
+            clearPath()
+            hadTarget = false
+            return
+        }
+
+        val had = hadTarget || TargetManager.target != null
+        if (!TargetManager.validate(level)) {
+            if (had) {
+                player.sendSystemMessage(Component.literal("Target Gone"))
+            }
+            hadTarget = false
             clearPath()
             return
         }
 
-        val target = TargetManager.target ?: run {
-            clearPath()
-            return
-        }
-
-        val start = player.blockPosition()
-        val goal = target.blockPosition()
-        val moved = start != lastStart || goal != lastGoal
-        if (moved || ticksUntilRepath <= 0) {
-            path = AStarPathfinder.find(level, start, goal)
-            lastStart = start
-            lastGoal = goal
-            ticksUntilRepath = REPATH_INTERVAL
-        } else {
-            ticksUntilRepath--
-        }
+        hadTarget = true
+        // Pathfinding is started explicitly; selection alone does not compute a path.
     }
 
     fun onDisconnect() {
         TargetManager.clear()
+        hadTarget = false
         clearPath()
     }
 
@@ -54,15 +48,19 @@ object PathfindingController {
             if (minecraft.gui.screen() != null) continue
             val picked = minecraft.crosshairPickEntity as? LivingEntity ?: continue
             if (picked === minecraft.player) continue
+            val alreadySelected = TargetManager.isTarget(picked)
             TargetManager.select(picked)
-            ticksUntilRepath = 0
+            if (!alreadySelected && TargetManager.isTarget(picked)) {
+                minecraft.player?.sendSystemMessage(Component.literal("Target Selected"))
+                hadTarget = true
+            } else if (alreadySelected) {
+                hadTarget = false
+                clearPath()
+            }
         }
     }
 
     private fun clearPath() {
         path = PathResult.EMPTY
-        lastGoal = null
-        lastStart = null
-        ticksUntilRepath = 0
     }
 }
