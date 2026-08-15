@@ -1,6 +1,7 @@
 package dev.farid.stabber.client
 
 import com.mojang.brigadier.Command
+import dev.farid.stabber.client.movement.PathFollower
 import dev.farid.stabber.client.path.PathfindingController
 import dev.farid.stabber.client.target.TargetManager
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
@@ -22,6 +23,14 @@ object StabberCommands {
                         return@executes 0
                     }
                     context.source.sendFeedback(Component.literal("Pathfinding started"))
+                    Command.SINGLE_SUCCESS
+                },
+            )
+            dispatcher.register(
+                ClientCommands.literal("start").executes {
+                    // Silent no-op when no target / no pathfind / not calculating.
+                    // Arms pending start when path is still calculating; follows when ready.
+                    PathFollower.requestStart()
                     Command.SINGLE_SUCCESS
                 },
             )

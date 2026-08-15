@@ -15,8 +15,8 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Drives [RotationController] and [MovementController] from the live path:
- * yaw toward the next node, or look at the target once it is in attack range.
+ * Drives [RotationController] and [MovementController] from the live path.
+ * Following starts only via [requestStart] (`/start`), never from pathfinding alone.
  */
 object PathFollower {
     private const val NODE_REACH_XZ = 0.5
@@ -26,21 +26,67 @@ object PathFollower {
     private const val STUCK_SPEED_EPS = 0.01
     private const val STUCK_TICKS = 8
 
+    /** Actively driving movement/rotation along the path. */
+    var following: Boolean = false
+        private set
+
+    /**
+     * `/start` while the initial path is still calculating. Becomes [following] once
+     * [PathfindingController] publishes a non-empty path.
+     */
+    var pendingStart: Boolean = false
+        private set
+
     private var stuckTicks = 0
     private var lastX = 0.0
     private var lastZ = 0.0
 
+    /**
+     * Arms or starts path following.
+     *
+     * - No target, or pathfinding never started → no-op.
+     * - Path already ready → start following immediately.
+     * - Pathfinding in flight with no path yet → arm [pendingStart]; begin when path arrives.
+     */
+    fun requestStart(): Boolean {
+        if (TargetManager.target == null) return false
+        if (!PathfindingController.active) return false
+
+        if (PathfindingController.path.nodes.isNotEmpty()) {
+            following = true
+            pendingStart = false
+            return true
+        }
+
+        // active + empty path ⇒ initial search still running (or about to publish)
+        pendingStart = true
+        return true
+    }
+
     fun tick(minecraft: Minecraft) {
+        if (pendingStart && !PathfindingController.active) {
+            pendingStart = false
+        }
+        if (pendingStart && PathfindingController.path.nodes.isNotEmpty()) {
+            following = true
+            pendingStart = false
+        }
+
+        if (!following) {
+            releaseControls()
+            return
+        }
+
         val player = minecraft.player
         val level = minecraft.level
         if (player == null || level == null || !PathfindingController.active) {
-            idle()
+            stop()
             return
         }
 
         val nodes = PathfindingController.path.nodes
         if (nodes.isEmpty()) {
-            idle()
+            releaseControls()
             return
         }
 
@@ -56,7 +102,7 @@ object PathFollower {
         }
 
         val index = nextNodeIndex(player, nodes) ?: run {
-            idle()
+            releaseControls()
             return
         }
         val node = nodes[index]
@@ -80,13 +126,15 @@ object PathFollower {
     }
 
     fun stop() {
-        idle()
+        following = false
+        pendingStart = false
+        releaseControls()
+        stuckTicks = 0
     }
 
-    private fun idle() {
+    private fun releaseControls() {
         MovementController.release()
         RotationController.cancel()
-        stuckTicks = 0
     }
 
     private fun canAttack(player: LocalPlayer, target: LivingEntity): Boolean {

@@ -6,6 +6,7 @@ import net.minecraft.client.player.KeyboardInput;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.phys.Vec2;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -31,12 +32,13 @@ public abstract class KeyboardInputMixin extends ClientInput {
         boolean sprint = this.keyPresses.sprint() || MovementController.INSTANCE.getSprint();
 
         this.keyPresses = new Input(forward, backward, left, right, jump, shift, sprint);
-        float forwardImpulse = calculateImpulse(forward, backward);
-        float leftImpulse = calculateImpulse(left, right);
+        float forwardImpulse = stabber$impulse(forward, backward);
+        float leftImpulse = stabber$impulse(left, right);
         this.moveVector = new Vec2(leftImpulse, forwardImpulse).normalized();
     }
 
-    private static float calculateImpulse(boolean positive, boolean negative) {
+    @Unique
+    private static float stabber$impulse(boolean positive, boolean negative) {
         if (positive == negative) {
             return 0.0F;
         }
