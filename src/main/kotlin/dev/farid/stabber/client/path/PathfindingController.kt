@@ -99,7 +99,7 @@ object PathfindingController {
 
             val prefix = nodes.subList(0, i)
             path = PathResult(
-                nodes = prefix + suffix.nodes,
+                nodes = PathSimplifier.simplify(prefix + suffix.nodes),
                 complete = true,
                 goal = suffix.goal,
             )

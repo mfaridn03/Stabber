@@ -276,7 +276,7 @@ object AStarPathfinder {
             cursor = cursor.parent
         }
         nodes.reverse()
-        return nodes
+        return PathSimplifier.simplify(nodes)
     }
 
     private fun chebyshev(a: BlockPos, b: BlockPos): Int {
