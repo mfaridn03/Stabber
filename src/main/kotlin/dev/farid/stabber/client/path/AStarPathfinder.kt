@@ -202,12 +202,17 @@ object AStarPathfinder {
         }
 
         private fun classify(from: PathNode, to: PathNode): MoveType? {
-            val dy = to.floorY - from.floorY
-            if (dy > StandingPositions.JUMP_HEIGHT + EPS) return null
-
             val fromCentre = StandingPositions.nodeCentre(from.pos, from.floorY)
             val toCentre = StandingPositions.nodeCentre(to.pos, to.floorY)
-            val profile = StandingPositions.supportProfile(level, fromCentre, toCentre, from.floorY, to.floorY)
+
+            // Tried first, and independently of the endpoint delta: a staircase climbs a full block per
+            // tread but is walkable, because each individual rise stays inside step height.
+            if (StandingPositions.sweepClearWalking(level, fromCentre, toCentre, from.floorY, to.floorY)) {
+                return MoveType.WALK
+            }
+
+            val dy = to.floorY - from.floorY
+            if (dy > StandingPositions.JUMP_HEIGHT + EPS) return null
 
             if (dy > StandingPositions.STEP_HEIGHT) {
                 val apex = max(from.floorY, to.floorY)
@@ -242,21 +247,7 @@ object AStarPathfinder {
                 }
             }
 
-            if (profile.allSupported) {
-                return if (StandingPositions.sweepClearInterpolated(
-                        level,
-                        fromCentre,
-                        toCentre,
-                        from.floorY,
-                        to.floorY,
-                    )
-                ) {
-                    MoveType.WALK
-                } else {
-                    null
-                }
-            }
-
+            val profile = StandingPositions.supportProfile(level, fromCentre, toCentre, from.floorY, to.floorY)
             if (profile.longestGap <= MAX_GAP && dy <= StandingPositions.JUMP_HEIGHT) {
                 val apex = max(from.floorY, to.floorY) + 0.5
                 if (StandingPositions.sweepClearElevating(

@@ -65,29 +65,103 @@ object StandingPositions {
         return hasClearanceAt(level, feetPos.x + 0.5, floorY, feetPos.z + 0.5, feetPos)
     }
 
-    fun sweepClear(level: PathingWorld, from: Vec3, to: Vec3, minY: Double): Boolean {
-        val bodyMinY = minY
-        val bodyMaxY = minY + PLAYER_HEIGHT
-        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
+    /**
+     * Walk traversal: the feet follow the actual terrain rather than a straight line between floors.
+     *
+     * At each sample the feet are lifted onto the highest support under the player's footprint that is
+     * within STEP_HEIGHT of the previous sample — the same auto-step the vanilla player performs. Chaining
+     * the samples means a staircase reads as a sequence of 0.5 rises rather than one 1.0 delta, and it also
+     * means the surface being stepped onto no longer intersects the body, so no collision exemptions are
+     * needed. Returns false if the terrain breaks (a gap, a rise beyond step height, or an obstruction) or
+     * if the ramp does not actually arrive at [toFloor].
+     */
+    fun sweepClearWalking(level: PathingWorld, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): Boolean {
+        val horizontal = hypot(to.x - from.x, to.z - from.z)
+        val steps = max(1, ceil(horizontal / SWEEP_STEP).toInt())
+        val feet = DoubleArray(steps + 1)
+        var reference = fromFloor
+        var lowest = fromFloor
+        var highest = fromFloor
+
+        for (i in 0..steps) {
+            val t = i.toDouble() / steps
+            val x = from.x + (to.x - from.x) * t
+            val z = from.z + (to.z - from.z) * t
+            val floorY = if (i == 0) fromFloor else footprintFloor(level, x, z, reference) ?: return false
+            feet[i] = floorY
+            reference = floorY
+            lowest = min(lowest, floorY)
+            highest = max(highest, floorY)
+        }
+
+        if (abs(reference - toFloor) > SUPPORT_MATCH) return false
+        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, lowest, highest + PLAYER_HEIGHT)) {
             return false
         }
-        return sweep(level, from, to) { _, x, z ->
-            val feet = BlockPos.containing(x, minY + EPS, z)
-            hasClearanceAt(level, x, minY, z, feet)
+
+        for (i in 0..steps) {
+            val t = i.toDouble() / steps
+            val x = from.x + (to.x - from.x) * t
+            val z = from.z + (to.z - from.z) * t
+            if (!bodyClear(level, x, feet[i], z)) return false
         }
+        return true
     }
 
-    fun sweepClearInterpolated(level: PathingWorld, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): Boolean {
-        val bodyMinY = min(fromFloor, toFloor)
-        val bodyMaxY = max(fromFloor, toFloor) + PLAYER_HEIGHT
-        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
-            return false
+    /** Highest support top under the player's footprint at (x, z) within STEP_HEIGHT of [reference]. */
+    private fun footprintFloor(level: PathingWorld, x: Double, z: Double, reference: Double): Double? {
+        val half = PLAYER_WIDTH * 0.5
+        val fx0 = x - half
+        val fx1 = x + half
+        val fz0 = z - half
+        val fz1 = z + half
+        val lo = reference - STEP_HEIGHT
+        val hi = reference + STEP_HEIGHT
+        var best = Double.NEGATIVE_INFINITY
+        val pos = BlockPos.MutableBlockPos()
+        for (bx in Mth.floor(fx0)..Mth.floor(fx1)) {
+            for (bz in Mth.floor(fz0)..Mth.floor(fz1)) {
+                for (by in Mth.floor(lo) - 1..Mth.floor(hi)) {
+                    pos.set(bx, by, bz)
+                    if (!isInWorld(level, pos) || !level.isLoaded(pos)) return null
+                    val shape = collision(level, pos)
+                    if (shape.isEmpty) continue
+                    val top = shapeTopWithin(
+                        shape,
+                        fx0 - bx,
+                        fx1 - bx,
+                        fz0 - bz,
+                        fz1 - bz,
+                        lo - by,
+                        hi - by,
+                    )
+                    if (top.isFinite()) best = max(best, by + top)
+                }
+            }
         }
-        return sweep(level, from, to) { t, x, z ->
-            val floorY = fromFloor + (toFloor - fromFloor) * t
-            val feet = BlockPos.containing(x, floorY + EPS, z)
-            hasClearanceAt(level, x, floorY, z, feet)
+        return if (best.isFinite()) best else null
+    }
+
+    /** Plain body-vs-world test with no exemptions; [feetY] is expected to already sit on the surface. */
+    private fun bodyClear(level: PathingWorld, x: Double, feetY: Double, z: Double): Boolean {
+        val feetHint = BlockPos.containing(x, feetY + EPS, z)
+        if (!isInWorld(level, feetHint) || !level.isLoaded(feetHint)) return false
+        val aabb = playerAabb(x, feetY, z)
+        val query = Shapes.create(aabb)
+        val pos = BlockPos.MutableBlockPos()
+        for (bx in Mth.floor(aabb.minX)..Mth.floor(aabb.maxX)) {
+            for (by in Mth.floor(aabb.minY)..Mth.floor(aabb.maxY)) {
+                for (bz in Mth.floor(aabb.minZ)..Mth.floor(aabb.maxZ)) {
+                    pos.set(bx, by, bz)
+                    if (!level.isLoaded(pos)) return false
+                    val shape = collision(level, pos)
+                    if (shape.isEmpty) continue
+                    val world = shape.move(bx.toDouble(), by.toDouble(), bz.toDouble())
+                    if (Shapes.joinIsNotEmpty(world, query, BooleanOp.AND)) return false
+                }
+            }
         }
+        return true
     }
 
     /**
@@ -130,7 +204,6 @@ object StandingPositions {
         val sampleSpan = horizontal / steps
         var longestGap = 0.0
         var currentGap = 0.0
-        var allSupported = true
         for (i in 0..steps) {
             val t = i.toDouble() / steps
             val x = from.x + (to.x - from.x) * t
@@ -142,29 +215,11 @@ object StandingPositions {
                 longestGap = max(longestGap, currentGap)
                 currentGap = 0.0
             } else {
-                allSupported = false
                 currentGap += if (i == 0) 0.0 else sampleSpan
             }
         }
         longestGap = max(longestGap, currentGap)
-        return SupportProfile(allSupported, longestGap)
-    }
-
-    private fun sweep(
-        level: PathingWorld,
-        from: Vec3,
-        to: Vec3,
-        test: (t: Double, x: Double, z: Double) -> Boolean,
-    ): Boolean {
-        val horizontal = hypot(to.x - from.x, to.z - from.z)
-        val steps = max(1, ceil(horizontal / SWEEP_STEP).toInt())
-        for (i in 0..steps) {
-            val t = i.toDouble() / steps
-            val x = from.x + (to.x - from.x) * t
-            val z = from.z + (to.z - from.z) * t
-            if (!test(t, x, z)) return false
-        }
-        return true
+        return SupportProfile(longestGap)
     }
 
     private fun hasClearanceAt(level: PathingWorld, x: Double, floorY: Double, z: Double, feetHint: BlockPos): Boolean {
@@ -401,6 +456,5 @@ object StandingPositions {
 }
 
 data class SupportProfile(
-    val allSupported: Boolean,
     val longestGap: Double,
 )
