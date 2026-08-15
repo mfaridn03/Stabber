@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.Level
 import java.util.PriorityQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
@@ -34,13 +35,19 @@ object AStarPathfinder {
     }.toIntArray()
 
     fun find(level: Level, startHint: BlockPos, goalHint: BlockPos): PathResult {
-        return find(LevelPathingWorld(level), startHint, goalHint)
+        return find(LevelPathingWorld(level), startHint, goalHint) ?: PathResult.EMPTY
     }
 
-    fun find(level: PathingWorld, startHint: BlockPos, goalHint: BlockPos): PathResult {
+    fun find(
+        level: PathingWorld,
+        startHint: BlockPos,
+        goalHint: BlockPos,
+        cancelled: AtomicBoolean? = null,
+    ): PathResult? {
+        if (cancelled?.get() == true) return null
         val start = resolveStanding(level, startHint) ?: return PathResult.EMPTY
         val goal = resolveStanding(level, goalHint) ?: return PathResult.EMPTY
-        val search = Search(level, start, goal)
+        val search = Search(level, start, goal, cancelled)
         return search.run()
     }
 
@@ -90,6 +97,7 @@ object AStarPathfinder {
         private val level: PathingWorld,
         private val start: PathNode,
         private val goal: PathNode,
+        private val cancelled: AtomicBoolean?,
     ) {
         private val standCache = Long2ObjectOpenHashMap<Standing>()
         private val standKnown = LongOpenHashSet()
@@ -97,7 +105,7 @@ object AStarPathfinder {
         private val closed = LongOpenHashSet()
         private val open = PriorityQueue<PathNode>(compareBy<PathNode> { it.f }.thenBy { it.h })
 
-        fun run(): PathResult {
+        fun run(): PathResult? {
             start.h = heuristic(start)
             start.g = 0.0
             open.add(start)
@@ -107,6 +115,7 @@ object AStarPathfinder {
             var expansions = 0
 
             while (open.isNotEmpty() && expansions < MAX_EXPANSIONS) {
+                if (cancelled?.get() == true) return null
                 val current = open.poll()
                 if (current.g > bestG.get(current.packed) + EPS) continue
                 if (!closed.add(current.packed)) continue
@@ -125,6 +134,7 @@ object AStarPathfinder {
                 expand(current)
             }
 
+            if (cancelled?.get() == true) return null
             return PathResult(reconstruct(bestPartial), complete = false, goal = goal.pos)
         }
 
@@ -309,7 +319,7 @@ object AStarPathfinder {
         val nodes = ArrayList<PathNode>()
         var cursor: PathNode? = end
         while (cursor != null) {
-            nodes.add(cursor)
+            nodes.add(PathNode(cursor.pos.immutable(), cursor.floorY, incoming = cursor.incoming))
             cursor = cursor.parent
         }
         nodes.reverse()

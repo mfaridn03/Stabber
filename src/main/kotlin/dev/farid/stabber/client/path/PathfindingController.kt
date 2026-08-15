@@ -6,9 +6,12 @@ import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
 import net.minecraft.network.chat.Component
 import net.minecraft.world.entity.LivingEntity
-import net.minecraft.world.level.Level
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 object PathfindingController {
+    @Volatile
     var path: PathResult = PathResult.EMPTY
         private set
 
@@ -16,7 +19,14 @@ object PathfindingController {
         private set
 
     private var hadTarget = false
-    private var lastTargetStanding: BlockPos? = null
+    private var submittedGoal: BlockPos? = null
+
+    private val jobId = AtomicInteger(0)
+    private var inFlightCancel: AtomicBoolean? = null
+
+    private val executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "stabber-pathfinding").apply { isDaemon = true }
+    }
 
     fun tick(minecraft: Minecraft) {
         handleInput(minecraft)
@@ -47,35 +57,25 @@ object PathfindingController {
             return
         }
 
-        val standing = AStarPathfinder.resolveStanding(level, target.blockPosition())?.pos ?: return
-        if (standing == lastTargetStanding) return
+        val goalHint = target.blockPosition().immutable()
+        if (goalHint == submittedGoal) return
 
-        if (!recomputeFromWalkBack(level, standing, target.blockPosition())) {
-            stopPathfinding()
-        }
+        submit(minecraft, fullSearch = path.nodes.size < 2, notifyFailure = false)
     }
 
     /**
-     * Starts a full pathfinding search from the local player to the selected target.
-     * @return true if a complete path was found
+     * Queues a full pathfinding search from the local player to the selected target.
+     * @return true if a search was submitted
      */
     fun startPathfinding(minecraft: Minecraft): Boolean {
         val level = minecraft.level ?: return false
-        val player = minecraft.player ?: return false
+        if (minecraft.player == null) return false
         if (!TargetManager.validate(level)) return false
-        val target = TargetManager.target ?: return false
+        if (TargetManager.target == null) return false
 
-        val result = AStarPathfinder.find(level, player.blockPosition(), target.blockPosition())
-        if (!result.complete || result.nodes.isEmpty()) {
-            stopPathfinding()
-            return false
-        }
-
-        path = result
         active = true
         hadTarget = true
-        lastTargetStanding = AStarPathfinder.resolveStanding(level, target.blockPosition())?.pos
-            ?: result.nodes.last().pos
+        submit(minecraft, fullSearch = true, notifyFailure = true)
         return true
     }
 
@@ -85,70 +85,54 @@ object PathfindingController {
         stopPathfinding()
     }
 
-    /**
-     * When the target moves, try recomputing from the 2nd-last path node, then 3rd-last, etc.
-     * Keeps the path prefix and splices on a complete suffix.
-     */
-    private fun recomputeFromWalkBack(level: Level, newStanding: BlockPos, goalHint: BlockPos): Boolean {
-        val nodes = path.nodes
-        if (nodes.size < 2) return false
+    private fun submit(minecraft: Minecraft, fullSearch: Boolean, notifyFailure: Boolean) {
+        val level = minecraft.level ?: return
+        val player = minecraft.player ?: return
+        val target = TargetManager.target ?: return
 
-        for (i in (nodes.size - 2) downTo 0) {
-            val suffix = AStarPathfinder.find(level, nodes[i].pos, goalHint)
-            if (!suffix.complete || suffix.nodes.isEmpty()) continue
-
-            val prefix = nodes.subList(0, i)
-            path = PathResult(
-                nodes = PathSimplifier.simplify(prefix + suffix.nodes),
-                complete = true,
-                goal = suffix.goal,
-            )
-            lastTargetStanding = newStanding
-            return dropNodesThatRecedeFromGoal(level, goalHint)
+        val startHint = player.blockPosition().immutable()
+        val goalHint = target.blockPosition().immutable()
+        val currentNodes = path.nodes
+        val anchors = ArrayList<BlockPos>(currentNodes.size + 2)
+        anchors.add(startHint)
+        anchors.add(goalHint)
+        for (node in currentNodes) {
+            anchors.add(node.pos)
         }
-        return false
+
+        val world = FrozenPathingWorld.capture(level, anchors)
+        val cancelled = AtomicBoolean(false)
+        inFlightCancel?.set(true)
+        inFlightCancel = cancelled
+        val id = jobId.incrementAndGet()
+        submittedGoal = goalHint
+
+        executor.execute {
+            val result = if (fullSearch || currentNodes.size < 2) {
+                AStarPathfinder.find(world, startHint, goalHint, cancelled)
+            } else {
+                PathRetarget.recompute(world, currentNodes, goalHint, cancelled)
+            }
+            if (result == null || cancelled.get()) return@execute
+
+            minecraft.execute {
+                if (id != jobId.get() || cancelled.get()) return@execute
+                applyResult(minecraft, result, notifyFailure)
+            }
+        }
     }
 
-    /**
-     * Each step of the spliced path must get closer to the end node.
-     * A U-turning target leaves a walk-history shaped prefix that recedes from the new goal;
-     * when that happens, recompute from the previous node so the suffix can cut the loop.
-     */
-    private fun dropNodesThatRecedeFromGoal(level: Level, goalHint: BlockPos): Boolean {
-        var i = 0
-        var repairs = 0
-        val maxRepairs = path.nodes.size.coerceAtLeast(1)
-        while (i < path.nodes.size - 1 && repairs < maxRepairs) {
-            val nodes = path.nodes
-            val end = nodes.last().pos
-            val previous = nodes[i]
-            val next = nodes[i + 1]
-            if (next.pos.distSqr(end) < previous.pos.distSqr(end)) {
-                i++
-                continue
+    private fun applyResult(minecraft: Minecraft, result: PathResult, notifyFailure: Boolean) {
+        if (!active) return
+        if (!result.complete || result.nodes.isEmpty()) {
+            if (notifyFailure) {
+                minecraft.player?.sendSystemMessage(Component.literal("No path found"))
             }
-
-            val suffix = AStarPathfinder.find(level, previous.pos, goalHint)
-            if (!suffix.complete || suffix.nodes.isEmpty()) {
-                i++
-                continue
-            }
-
-            val suffixEnd = suffix.nodes.last().pos
-            val suffixNext = suffix.nodes.getOrNull(1)
-            if (suffixNext != null && suffixNext.pos.distSqr(suffixEnd) >= previous.pos.distSqr(suffixEnd)) {
-                i++
-                continue
-            }
-
-            path = PathResult(
-                nodes = PathSimplifier.simplify(nodes.subList(0, i) + suffix.nodes),
-                complete = true,
-                goal = suffix.goal,
-            )
-            repairs++
+            stopPathfinding()
+            return
         }
-        return true
+
+        path = result
     }
 
     private fun handleInput(minecraft: Minecraft) {
@@ -169,8 +153,11 @@ object PathfindingController {
     }
 
     private fun stopPathfinding() {
+        inFlightCancel?.set(true)
+        inFlightCancel = null
+        jobId.incrementAndGet()
         path = PathResult.EMPTY
         active = false
-        lastTargetStanding = null
+        submittedGoal = null
     }
 }

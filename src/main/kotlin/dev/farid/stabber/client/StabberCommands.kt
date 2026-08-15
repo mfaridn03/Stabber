@@ -18,7 +18,7 @@ object StabberCommands {
                         return@executes 0
                     }
                     if (!PathfindingController.startPathfinding(client)) {
-                        context.source.sendError(Component.literal("No path found"))
+                        context.source.sendError(Component.literal("Cannot pathfind"))
                         return@executes 0
                     }
                     context.source.sendFeedback(Component.literal("Pathfinding started"))
