@@ -60,7 +60,7 @@ object PathfindingController {
         val goalHint = target.blockPosition().immutable()
         if (goalHint == submittedGoal) return
 
-        submit(minecraft, fullSearch = path.nodes.size < 2, notifyFailure = false)
+        submit(minecraft, fullSearch = path.raw.size < 2, notifyFailure = false)
     }
 
     /**
@@ -92,7 +92,7 @@ object PathfindingController {
 
         val startHint = player.blockPosition().immutable()
         val goalHint = target.blockPosition().immutable()
-        val currentNodes = path.nodes
+        val currentNodes = path.raw
         val anchors = ArrayList<BlockPos>(currentNodes.size + 2)
         anchors.add(startHint)
         anchors.add(goalHint)
@@ -117,14 +117,24 @@ object PathfindingController {
 
             minecraft.execute {
                 if (id != jobId.get() || cancelled.get()) return@execute
-                applyResult(minecraft, result, notifyFailure)
+                applyRawResult(minecraft, result, notifyFailure)
+            }
+
+            if (cancelled.get() || !result.complete || result.raw.isEmpty()) return@execute
+
+            val pulled = PathStringPuller.pull(world, result.raw)
+            if (cancelled.get()) return@execute
+
+            minecraft.execute {
+                if (id != jobId.get() || cancelled.get()) return@execute
+                applyOptimized(pulled)
             }
         }
     }
 
-    private fun applyResult(minecraft: Minecraft, result: PathResult, notifyFailure: Boolean) {
+    private fun applyRawResult(minecraft: Minecraft, result: PathResult, notifyFailure: Boolean) {
         if (!active) return
-        if (!result.complete || result.nodes.isEmpty()) {
+        if (!result.complete || result.raw.isEmpty()) {
             if (notifyFailure) {
                 minecraft.player?.sendSystemMessage(Component.literal("No path found"))
             }
@@ -132,7 +142,12 @@ object PathfindingController {
             return
         }
 
-        path = result
+        path = result.copy(optimized = null)
+    }
+
+    private fun applyOptimized(pulled: List<PathNode>) {
+        if (!active || path.raw.isEmpty()) return
+        path = path.copy(optimized = pulled)
     }
 
     private fun handleInput(minecraft: Minecraft) {
