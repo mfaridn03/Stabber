@@ -140,16 +140,6 @@ object PathFollower {
             return
         }
 
-        val target = TargetManager.target
-        val inAttackRange = target != null && canAttack(player, target)
-
-        if (inAttackRange) {
-            MovementController.apply(forward = false, sprint = false)
-            stuckTicks = 0
-            rememberPos(player)
-            return
-        }
-
         syncToPath(player, nodes)
         val fix = PathProgress.project(nodes, player.x, player.y, player.z, progressIndex, NODE_REACH_XZ)
         if (fix == null) {
@@ -162,9 +152,19 @@ object PathFollower {
         lockedNode = node.pos
         updateOffPath(fix.crossTrack)
 
+        val remaining = PathProgress.remainingLength(nodes, fix)
+        val target = TargetManager.target
+        // Interaction range is several blocks; keep tracking the path until the last leg so a nearby
+        // target does not steal the look while jump/walk nodes are still ahead.
+        if (target != null && onFinalLeg(nodes, fix) && canAttack(player, target)) {
+            MovementController.apply(forward = false, sprint = false)
+            stuckTicks = 0
+            rememberPos(player)
+            return
+        }
+
         // Past the final waypoint with the target still out of reach: nothing left to steer along, so
         // stop rather than keep walking forward off the end of the path.
-        val remaining = PathProgress.remainingLength(nodes, fix)
         if (remaining < AIM_HOLD_XZ) {
             releaseControls()
             return
@@ -209,21 +209,25 @@ object PathFollower {
         val nodes = PathfindingController.path.nodes
         if (nodes.isEmpty()) return
 
-        val target = TargetManager.target
-        if (target != null && canAttack(player, target)) {
-            RotationController.lookAt(player, target, partialTick = partialTick)
-            return
-        }
-
         val pos = player.getPosition(partialTick)
         val eyeY = player.eyeHeight.toDouble()
+        val target = TargetManager.target
 
         val fix = PathProgress.project(nodes, pos.x, pos.y, pos.z, progressIndex, NODE_REACH_XZ)
         if (fix == null) {
+            if (target != null && canAttack(player, target)) {
+                RotationController.lookAt(player, target, partialTick = partialTick)
+                return
+            }
             val node = nodes.first()
             val centre = StandingPositions.nodeCentre(node.pos, node.floorY)
             if (hypot(pos.x - centre.x, pos.z - centre.z) < AIM_HOLD_XZ) return
             RotationController.lookAt(player, centre.add(0.0, eyeY, 0.0), TURN_RATE_DEG_PER_SEC, partialTick)
+            return
+        }
+
+        if (target != null && onFinalLeg(nodes, fix) && canAttack(player, target)) {
+            RotationController.lookAt(player, target, partialTick = partialTick)
             return
         }
 
@@ -257,6 +261,10 @@ object PathFollower {
     private fun releaseControls() {
         MovementController.release()
         RotationController.cancel()
+    }
+
+    private fun onFinalLeg(nodes: List<PathNode>, fix: PathProgress.Fix): Boolean {
+        return fix.index >= nodes.size - 2
     }
 
     private fun canAttack(player: LocalPlayer, target: LivingEntity): Boolean {
