@@ -24,6 +24,8 @@ object PathFollower {
     private const val NODE_REACH_XZ = 0.75
     /** Don't aim at a waypoint this close; look further along the path. */
     private const val AIM_MIN_XZ = 1.5
+    /** Closer than this the bearing is meaningless, so hold the current view instead. */
+    private const val AIM_HOLD_XZ = 0.5
     /** Degrees per frame while path-following: a brisk head turn, not an instant snap. */
     private const val TURN_MAX_STEP = 9.0
     private const val SPRINT_YAW_TOLERANCE = 20.0f
@@ -122,9 +124,10 @@ object PathFollower {
         }
         val node = nodes[followIndex]
         val aim = aimPoint(player, nodes, followIndex)
-
-        val yaw = yawToward(player, aim)
-        RotationController.lookAt(player, aim, TURN_MAX_STEP)
+        val yaw = if (aim == null) player.yRot else yawToward(player, aim)
+        if (aim != null) {
+            RotationController.lookAt(player, aim, TURN_MAX_STEP)
+        }
 
         val yawError = abs(Mth.degreesDifference(player.yRot, yaw))
         val remaining = nodes.size - followIndex
@@ -208,16 +211,19 @@ object PathFollower {
 
     /**
      * Where the head looks: the first waypoint far enough away to give a stable bearing, sighted at
-     * eye level rather than at its floor. Node 0 is the cell the path started from, so it is never a
-     * look target while anything follows it — aiming at your own feet is what makes the view snap.
+     * eye level rather than at its floor.
+     *
+     * Null means "keep looking where you were": the bearing to a point almost underfoot swings wildly
+     * for a step of movement, which is what made the view snap.
      */
-    private fun aimPoint(player: LocalPlayer, nodes: List<PathNode>, followIndex: Int): Vec3 {
+    private fun aimPoint(player: LocalPlayer, nodes: List<PathNode>, followIndex: Int): Vec3? {
         val last = nodes.lastIndex
-        var index = followIndex.coerceAtLeast(if (last > 0) 1 else 0)
+        var index = followIndex
         while (index < last && horizontalDist(player, nodes[index]) < AIM_MIN_XZ) {
             index++
         }
         val node = nodes[index]
+        if (horizontalDist(player, node) < AIM_HOLD_XZ) return null
         val centre = StandingPositions.nodeCentre(node.pos, node.floorY)
         return Vec3(centre.x, centre.y + player.eyeHeight, centre.z)
     }
