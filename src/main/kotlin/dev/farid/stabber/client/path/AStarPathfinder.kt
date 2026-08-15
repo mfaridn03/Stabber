@@ -18,7 +18,7 @@ object AStarPathfinder {
     const val JUMP_EPSILON = 0.05
     const val GAP_COST_PER_BLOCK = 0.25
     const val VERTICAL_COST_WEIGHT = 1.05
-    private const val MAX_DROP_SCAN = 64
+    internal const val MAX_DROP_SCAN = 64
     private const val GOAL_SEARCH_RADIUS = 2
     private const val SWEEPS_PER_NODE = 80
     private const val EPS = 1.0e-6
