@@ -1,8 +1,8 @@
 package dev.farid.stabber.client
 
+import dev.farid.stabber.client.movement.PathFollower
 import dev.farid.stabber.client.path.PathfindingController
 import dev.farid.stabber.client.render.PathGizmoRenderer
-import dev.farid.stabber.client.rotation.RotationController
 import dev.farid.stabber.client.target.TargetManager
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
@@ -17,6 +17,7 @@ class StabberClient : ClientModInitializer {
         StabberCommands.register()
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             PathfindingController.tick(client)
+            PathFollower.tick(client)
         }
         LevelRenderEvents.BEFORE_GIZMOS.register {
             val levelRenderer = Minecraft.getInstance().levelRenderer
@@ -26,7 +27,7 @@ class StabberClient : ClientModInitializer {
         }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             PathfindingController.onDisconnect()
-            RotationController.cancel()
+            PathFollower.stop()
         }
     }
 }
