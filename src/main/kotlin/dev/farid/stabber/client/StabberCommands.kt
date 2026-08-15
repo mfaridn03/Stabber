@@ -2,6 +2,7 @@ package dev.farid.stabber.client
 
 import com.mojang.brigadier.Command
 import dev.farid.stabber.client.movement.PathFollower
+import dev.farid.stabber.client.path.NodeEditController
 import dev.farid.stabber.client.path.PathfindingController
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands
@@ -14,6 +15,14 @@ object StabberCommands {
                 ClientCommands.literal("pathfind").executes { context ->
                     val enabled = PathfindingController.toggleAutoPathfind(context.source.client)
                     val msg = if (enabled) "Pathfinding enabled" else "Pathfinding disabled"
+                    context.source.sendFeedback(Component.literal(msg))
+                    Command.SINGLE_SUCCESS
+                },
+            )
+            dispatcher.register(
+                ClientCommands.literal("edit").executes { context ->
+                    val enabled = NodeEditController.toggleEdit()
+                    val msg = if (enabled) "Node edit enabled" else "Node edit disabled"
                     context.source.sendFeedback(Component.literal(msg))
                     Command.SINGLE_SUCCESS
                 },

@@ -124,6 +124,10 @@ object PathfindingController {
         val target = TargetManager.target ?: return false
         val playerPos = player.blockPosition()
         val goalHint = target.blockPosition()
+        if (ManualNodeGraph.isEmpty()) {
+            player.sendSystemMessage(Component.literal("No manual nodes"))
+            return false
+        }
         if (!PathfindingRegion.contains(playerPos) || !PathfindingRegion.contains(goalHint)) {
             player.sendSystemMessage(Component.literal("Outside pathfinding region"))
             return false
@@ -156,6 +160,13 @@ object PathfindingController {
             return false
         }
         val candidates = AutoTargetScanner.findClosest(level, player, MAX_AUTO_CANDIDATES)
+        if (ManualNodeGraph.isEmpty()) {
+            if (notifyFailure) {
+                player.sendSystemMessage(Component.literal("No manual nodes"))
+            }
+            stopAutoPathfind()
+            return false
+        }
         if (candidates.isEmpty()) {
             if (notifyFailure) {
                 player.sendSystemMessage(Component.literal("No valid targets"))
@@ -204,6 +215,7 @@ object PathfindingController {
             anchors.add(goal.pos)
         }
 
+        val playerFeet = player.position()
         val world = FrozenPathingWorld.capture(level, anchors)
         val cancelled = AtomicBoolean(false)
         inFlightCancel?.set(true)
@@ -217,7 +229,7 @@ object PathfindingController {
             var result: PathResult? = null
             for (goal in goals) {
                 if (cancelled.get()) return@execute
-                val found = AStarPathfinder.find(world, playerPos, goal.pos, cancelled)
+                val found = HybridPathAssembler.assemble(world, playerPos, playerFeet, goal.pos, cancelled)
                 if (found == null || cancelled.get()) return@execute
                 if (found.complete && found.raw.isNotEmpty()) {
                     winner = goal
@@ -284,14 +296,28 @@ object PathfindingController {
             stopPathfinding()
             return
         }
-        val currentNodes = path.raw
-        val anchors = ArrayList<BlockPos>(currentNodes.size + 3)
-        anchors.add(playerPos)
-        anchors.add(startHint)
-        anchors.add(goalHint)
-        for (node in currentNodes) {
-            anchors.add(node.pos)
+        if (ManualNodeGraph.isEmpty()) {
+            if (autoMode) {
+                if (!autoSearchInFlight) {
+                    tryAcquire(minecraft, notifyFailure = true)
+                }
+                return
+            }
+            if (notifyFailure) {
+                player.sendSystemMessage(Component.literal("No manual nodes"))
+            }
+            stopPathfinding()
+            return
         }
+
+        val currentNodes = path.raw
+        val extra = ArrayList<BlockPos>(currentNodes.size + 1)
+        extra.add(startHint)
+        for (node in currentNodes) {
+            extra.add(node.pos)
+        }
+        val anchors = HybridPathAssembler.anchors(playerPos, goalHint, extra)
+        val playerFeet = player.position()
 
         val world = FrozenPathingWorld.capture(level, anchors)
         val cancelled = AtomicBoolean(false)
@@ -301,11 +327,7 @@ object PathfindingController {
         submittedGoal = goalHint
 
         executor.execute {
-            val result = if (fullSearch || currentNodes.size < 2) {
-                AStarPathfinder.find(world, startHint, goalHint, cancelled)
-            } else {
-                PathRetarget.recompute(world, currentNodes, startHint, goalHint, cancelled)
-            }
+            val result = HybridPathAssembler.assemble(world, playerPos, playerFeet, goalHint, cancelled)
             if (result == null || cancelled.get()) return@execute
 
             minecraft.execute {
@@ -323,7 +345,8 @@ object PathfindingController {
                 return
             }
             if (notifyFailure) {
-                minecraft.player?.sendSystemMessage(Component.literal("No path found"))
+                val msg = if (ManualNodeGraph.isEmpty()) "No manual nodes" else "No path found"
+                minecraft.player?.sendSystemMessage(Component.literal(msg))
             }
             stopPathfinding()
             return

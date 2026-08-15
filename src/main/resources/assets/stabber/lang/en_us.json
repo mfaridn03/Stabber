@@ -1,3 +1,8 @@
 {
-  "key.stabber.select_target": "Select Pathfinding Target"
+  "key.stabber.select_target": "Select Pathfinding Target",
+  "key.stabber.place_node": "Place Node",
+  "key.stabber.remove_node": "Remove Node",
+  "key.stabber.place_jump_node": "Place Jump Node",
+  "key.stabber.place_drop_node": "Place Drop Node",
+  "key.stabber.select_mode": "Select Mode"
 }
