@@ -10,6 +10,7 @@ class StabberClient : ClientModInitializer {
 
     override fun onInitializeClient() {
         StabberKeys.register()
+        StabberCommands.register()
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             PathfindingController.tick(client)
             PathGizmoRenderer.render(PathfindingController.path)

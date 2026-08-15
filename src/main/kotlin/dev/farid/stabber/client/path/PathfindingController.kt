@@ -10,6 +10,9 @@ object PathfindingController {
     var path: PathResult = PathResult.EMPTY
         private set
 
+    var active: Boolean = false
+        private set
+
     private var hadTarget = false
 
     fun tick(minecraft: Minecraft) {
@@ -18,7 +21,7 @@ object PathfindingController {
         val level = minecraft.level
         val player = minecraft.player
         if (level == null || player == null) {
-            clearPath()
+            stopPathfinding()
             hadTarget = false
             return
         }
@@ -29,18 +32,39 @@ object PathfindingController {
                 player.sendSystemMessage(Component.literal("Target Gone"))
             }
             hadTarget = false
-            clearPath()
+            stopPathfinding()
             return
         }
 
         hadTarget = true
-        // Pathfinding is started explicitly; selection alone does not compute a path.
+    }
+
+    /**
+     * Starts a full pathfinding search from the local player to the selected target.
+     * @return true if a complete path was found
+     */
+    fun startPathfinding(minecraft: Minecraft): Boolean {
+        val level = minecraft.level ?: return false
+        val player = minecraft.player ?: return false
+        if (!TargetManager.validate(level)) return false
+        val target = TargetManager.target ?: return false
+
+        val result = AStarPathfinder.find(level, player.blockPosition(), target.blockPosition())
+        if (!result.complete || result.nodes.isEmpty()) {
+            stopPathfinding()
+            return false
+        }
+
+        path = result
+        active = true
+        hadTarget = true
+        return true
     }
 
     fun onDisconnect() {
         TargetManager.clear()
         hadTarget = false
-        clearPath()
+        stopPathfinding()
     }
 
     private fun handleInput(minecraft: Minecraft) {
@@ -55,12 +79,13 @@ object PathfindingController {
                 hadTarget = true
             } else if (alreadySelected) {
                 hadTarget = false
-                clearPath()
+                stopPathfinding()
             }
         }
     }
 
-    private fun clearPath() {
+    private fun stopPathfinding() {
         path = PathResult.EMPTY
+        active = false
     }
 }
