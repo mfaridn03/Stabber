@@ -128,14 +128,14 @@ object AStarPathfinder {
                 }
 
                 if (current.packed == goal.packed) {
-                    return PathResult(reconstruct(current), complete = true, goal = goal.pos)
+                    return PathResult.of(level, reconstruct(current), complete = true, goal = goal.pos)
                 }
 
                 expand(current)
             }
 
             if (cancelled?.get() == true) return null
-            return PathResult(reconstruct(bestPartial), complete = false, goal = goal.pos)
+            return PathResult.of(level, reconstruct(bestPartial), complete = false, goal = goal.pos)
         }
 
         private fun reconstruct(end: PathNode): List<PathNode> {

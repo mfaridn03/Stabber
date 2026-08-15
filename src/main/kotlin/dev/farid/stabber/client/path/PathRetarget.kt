@@ -36,7 +36,8 @@ object PathRetarget {
             if (!suffix.complete || suffix.raw.isEmpty()) continue
 
             val prefix = remaining.subList(0, i)
-            val spliced = PathResult(
+            val spliced = PathResult.of(
+                world,
                 raw = PathSimplifier.simplify(prefix + suffix.raw),
                 complete = true,
                 goal = suffix.goal,
@@ -107,7 +108,8 @@ object PathRetarget {
                 continue
             }
 
-            path = PathResult(
+            path = PathResult.of(
+                world,
                 raw = PathSimplifier.simplify(nodes.subList(0, i) + suffix.raw),
                 complete = true,
                 goal = suffix.goal,
