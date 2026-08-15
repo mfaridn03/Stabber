@@ -30,8 +30,8 @@ object PathFollower {
     private const val LOOKAHEAD = 3.0
     /** Closer than this the bearing is meaningless, so hold the current view instead. */
     private const val AIM_HOLD_XZ = 0.5
-    /** Degrees per frame while path-following: a brisk head turn, not an instant snap. */
-    private const val TURN_MAX_STEP = 9.0
+    /** Degrees per second while path-following: a brisk head turn, not an instant snap. */
+    private const val TURN_RATE_DEG_PER_SEC = 180.0
     private const val SPRINT_YAW_TOLERANCE = 20.0f
     /** Blocks of path left; below this the run-up is not worth the loss of turn authority. */
     private const val SPRINT_MIN_REMAINING = 3.0
@@ -41,7 +41,7 @@ object PathFollower {
     /** Blocks of sideways correction per block of offset from the path line. */
     private const val CROSSTRACK_GAIN = 1.0
     /** Damping on the offset's rate of change, so the correction does not overshoot into a weave. */
-    private const val CROSSTRACK_DAMPING = 2.0
+    private const val CROSSTRACK_DAMPING = 4.0
     /** Caps the correction at 45 degrees off the segment. */
     private const val MAX_LATERAL = 1.0
 
@@ -144,7 +144,6 @@ object PathFollower {
         val inAttackRange = target != null && canAttack(player, target)
 
         if (inAttackRange) {
-            RotationController.lookAt(player, target)
             MovementController.apply(forward = false, sprint = false)
             stuckTicks = 0
             rememberPos(player)
@@ -172,9 +171,6 @@ object PathFollower {
         }
 
         val carrot = PathProgress.carrot(nodes, fix, LOOKAHEAD)
-        if (horizontalDist(player, carrot) >= AIM_HOLD_XZ) {
-            RotationController.lookAt(player, carrot.add(0.0, player.eyeHeight.toDouble(), 0.0), TURN_MAX_STEP)
-        }
 
         val travel = travelDirection(fix, player, carrot)
         val relative = Mth.degreesDifference(player.yRot, travel).toDouble()
@@ -198,6 +194,45 @@ object PathFollower {
         if (stuckTicks >= STUCK_TICKS && player.onGround()) {
             MovementController.requestJump()
             stuckTicks = 0
+        }
+    }
+
+    /**
+     * Refreshes the look target from interpolated positions. Called every render frame so the
+     * camera tracks the carrot (or attack target) between ticks.
+     */
+    fun updateAim(minecraft: Minecraft, partialTick: Float) {
+        if (!following) return
+        val player = minecraft.player ?: return
+        if (!PathfindingController.active) return
+
+        val nodes = PathfindingController.path.nodes
+        if (nodes.isEmpty()) return
+
+        val target = TargetManager.target
+        if (target != null && canAttack(player, target)) {
+            RotationController.lookAt(player, target, partialTick = partialTick)
+            return
+        }
+
+        val pos = player.getPosition(partialTick)
+        val eyeY = player.eyeHeight.toDouble()
+
+        val fix = PathProgress.project(nodes, pos.x, pos.z, progressIndex, NODE_REACH_XZ)
+        if (fix == null) {
+            val node = nodes.first()
+            val centre = StandingPositions.nodeCentre(node.pos, node.floorY)
+            if (hypot(pos.x - centre.x, pos.z - centre.z) < AIM_HOLD_XZ) return
+            RotationController.lookAt(player, centre.add(0.0, eyeY, 0.0), TURN_RATE_DEG_PER_SEC, partialTick)
+            return
+        }
+
+        val remaining = PathProgress.remainingLength(nodes, fix)
+        if (remaining < AIM_HOLD_XZ) return
+
+        val carrot = PathProgress.carrot(nodes, fix, LOOKAHEAD)
+        if (hypot(pos.x - carrot.x, pos.z - carrot.z) >= AIM_HOLD_XZ) {
+            RotationController.lookAt(player, carrot.add(0.0, eyeY, 0.0), TURN_RATE_DEG_PER_SEC, partialTick)
         }
     }
 
@@ -252,7 +287,6 @@ object PathFollower {
             releaseControls()
             return
         }
-        RotationController.lookAt(player, centre.add(0.0, player.eyeHeight.toDouble(), 0.0), TURN_MAX_STEP)
         MovementController.apply(forward = true, jump = shouldJump(player, node))
         updateStuck(player)
     }

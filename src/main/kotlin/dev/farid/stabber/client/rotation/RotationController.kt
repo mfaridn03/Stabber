@@ -3,6 +3,7 @@ package dev.farid.stabber.client.rotation
 import net.minecraft.util.Mth
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.phys.Vec3
+import kotlin.math.sqrt
 
 /**
  * Rotates the player by feeding synthetic mouse deltas into [net.minecraft.client.MouseHandler],
@@ -14,8 +15,8 @@ import net.minecraft.world.phys.Vec3
  */
 object RotationController {
 
-    /** Maximum rotation applied per frame when the caller does not specify one. */
-    const val DEFAULT_MAX_STEP: Double = 30.0
+    /** Maximum rotation applied per second when the caller does not specify one. */
+    const val DEFAULT_MAX_STEP: Double = 30.0 * 60.0
 
     /** Below this many degrees an axis counts as reached. */
     private const val EPSILON: Double = 0.01
@@ -29,6 +30,7 @@ object RotationController {
     var targetPitch: Float? = null
         private set
 
+    /** Degrees per second. */
     private var maxStep: Double = DEFAULT_MAX_STEP
 
     val isRotating: Boolean
@@ -36,7 +38,7 @@ object RotationController {
 
     /**
      * Rotates toward [yaw] and/or [pitch]; a null component leaves that axis under user control.
-     * [maxStepDegrees] caps how far each axis moves per frame.
+     * [maxStepDegrees] caps how far each axis moves per second.
      */
     fun rotateTo(yaw: Float?, pitch: Float?, maxStepDegrees: Double = DEFAULT_MAX_STEP) {
         if (yaw == null && pitch == null) {
@@ -61,19 +63,24 @@ object RotationController {
         rotateTo(yaw, pitch, Double.MAX_VALUE)
     }
 
-    fun lookAt(player: Entity, point: Vec3, maxStepDegrees: Double = DEFAULT_MAX_STEP) {
-        val from = player.eyePosition
-        val dx = point.x - from.x
-        val dy = point.y - from.y
-        val dz = point.z - from.z
-        val horizontal = Math.sqrt(dx * dx + dz * dz)
-        val yaw = Mth.wrapDegrees(Math.toDegrees(Mth.atan2(dz, dx)).toFloat() - 90.0f)
-        val pitch = Mth.wrapDegrees(-Math.toDegrees(Mth.atan2(dy, horizontal)).toFloat())
-        rotateTo(yaw, pitch, maxStepDegrees)
+    fun lookAt(
+        player: Entity,
+        point: Vec3,
+        maxStepDegrees: Double = DEFAULT_MAX_STEP,
+        partialTick: Float = 1.0f,
+    ) {
+        lookFromTo(player.getEyePosition(partialTick), point, maxStepDegrees)
     }
 
-    fun lookAt(player: Entity, target: Entity, atEyes: Boolean = true, maxStepDegrees: Double = DEFAULT_MAX_STEP) {
-        lookAt(player, if (atEyes) target.eyePosition else target.position(), maxStepDegrees)
+    fun lookAt(
+        player: Entity,
+        target: Entity,
+        atEyes: Boolean = true,
+        maxStepDegrees: Double = DEFAULT_MAX_STEP,
+        partialTick: Float = 1.0f,
+    ) {
+        val to = if (atEyes) target.getEyePosition(partialTick) else target.getPosition(partialTick)
+        lookFromTo(player.getEyePosition(partialTick), to, maxStepDegrees)
     }
 
     fun cancel() {
@@ -86,11 +93,19 @@ object RotationController {
      * Returns the mouse delta that moves [player] one step toward the active target, or null when
      * idle. [degreesPerUnitX] and [degreesPerUnitY] are the signed degrees applied per unit of
      * accumulated mouse movement, so the caller owns sensitivity and the invert options.
+     * [deltaSeconds] is the wall-clock duration of this frame.
      */
-    fun consumeFrameDelta(player: Entity, degreesPerUnitX: Double, degreesPerUnitY: Double): Step? {
+    fun consumeFrameDelta(
+        player: Entity,
+        degreesPerUnitX: Double,
+        degreesPerUnitY: Double,
+        deltaSeconds: Double,
+    ): Step? {
         val yaw = targetYaw
         val pitch = targetPitch
         if (yaw == null && pitch == null) return null
+
+        val stepLimit = maxStep * deltaSeconds.coerceAtLeast(0.0)
 
         var dx = 0.0
         if (yaw != null) {
@@ -98,7 +113,7 @@ object RotationController {
             if (Math.abs(error) <= EPSILON) {
                 targetYaw = null
             } else {
-                dx = toMouseDelta(error, degreesPerUnitX)
+                dx = toMouseDelta(error, degreesPerUnitX, stepLimit)
             }
         }
 
@@ -108,7 +123,7 @@ object RotationController {
             if (Math.abs(error) <= EPSILON) {
                 targetPitch = null
             } else {
-                dy = toMouseDelta(error, degreesPerUnitY)
+                dy = toMouseDelta(error, degreesPerUnitY, stepLimit)
             }
         }
 
@@ -118,9 +133,19 @@ object RotationController {
         return Step(dx, dy)
     }
 
-    private fun toMouseDelta(error: Double, degreesPerUnit: Double): Double {
+    private fun lookFromTo(from: Vec3, to: Vec3, maxStepDegrees: Double) {
+        val dx = to.x - from.x
+        val dy = to.y - from.y
+        val dz = to.z - from.z
+        val horizontal = sqrt(dx * dx + dz * dz)
+        val yaw = Mth.wrapDegrees(Math.toDegrees(Mth.atan2(dz, dx)).toFloat() - 90.0f)
+        val pitch = Mth.wrapDegrees(-Math.toDegrees(Mth.atan2(dy, horizontal)).toFloat())
+        rotateTo(yaw, pitch, maxStepDegrees)
+    }
+
+    private fun toMouseDelta(error: Double, degreesPerUnit: Double, stepLimit: Double): Double {
         if (Math.abs(degreesPerUnit) < 1.0e-9) return 0.0
-        val step = Mth.clamp(error, -maxStep, maxStep)
+        val step = Mth.clamp(error, -stepLimit, stepLimit)
         return step / degreesPerUnit
     }
 }

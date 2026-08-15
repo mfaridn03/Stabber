@@ -1,5 +1,6 @@
 package dev.farid.stabber.mixin;
 
+import dev.farid.stabber.client.movement.PathFollower;
 import dev.farid.stabber.client.rotation.RotationController;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
@@ -39,11 +40,15 @@ public class MouseHandlerMixin {
      */
     @Inject(method = "turnPlayer", at = @At("HEAD"))
     private void stabber$applyRotationTarget(double mousea, CallbackInfo ci) {
-        if (!RotationController.INSTANCE.isRotating()) {
-            return;
-        }
         LocalPlayer player = this.minecraft.player;
         if (player == null) {
+            return;
+        }
+
+        float partialTick = this.minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        PathFollower.INSTANCE.updateAim(this.minecraft, partialTick);
+
+        if (!RotationController.INSTANCE.isRotating()) {
             return;
         }
 
@@ -68,7 +73,7 @@ public class MouseHandlerMixin {
         double degreesPerUnitY = this.minecraft.options.invertMouseY().get() ? -unitScale : unitScale;
 
         RotationController.Step step =
-            RotationController.INSTANCE.consumeFrameDelta(player, degreesPerUnitX, degreesPerUnitY);
+            RotationController.INSTANCE.consumeFrameDelta(player, degreesPerUnitX, degreesPerUnitY, mousea);
         if (step == null) {
             return;
         }
