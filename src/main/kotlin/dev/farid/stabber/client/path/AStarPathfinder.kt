@@ -15,7 +15,7 @@ import kotlin.math.sqrt
 object AStarPathfinder {
     const val MAX_EXPANSIONS = 2000
     const val MAX_RADIUS = 64
-    const val MAX_GAP = 3.0
+    const val MAX_GAP = 2.5
     const val JUMP_EPSILON = 0.05
     const val GAP_COST_PER_BLOCK = 0.25
     const val VERTICAL_COST_WEIGHT = 1.05
