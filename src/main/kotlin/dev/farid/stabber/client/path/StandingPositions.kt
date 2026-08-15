@@ -2,8 +2,11 @@ package dev.farid.stabber.client.path
 
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.tags.BlockTags
 import net.minecraft.util.Mth
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.FenceGateBlock
+import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
 import net.minecraft.world.phys.shapes.BooleanOp
@@ -11,8 +14,10 @@ import net.minecraft.world.phys.shapes.Shapes
 import net.minecraft.world.phys.shapes.VoxelShape
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 
 object StandingPositions {
     const val PLAYER_WIDTH = 0.6
@@ -22,6 +27,7 @@ object StandingPositions {
     const val THIN_FLOOR_MAX = 0.5
     const val SWEEP_STEP = 0.25
     private const val EPS = 1.0e-4
+    private const val CORNER_T_EPS = 1.0e-3
 
     fun playerAabb(x: Double, floorY: Double, z: Double): AABB {
         val center = Vec3(x, floorY + PLAYER_HEIGHT * 0.5, z)
@@ -60,6 +66,11 @@ object StandingPositions {
     }
 
     fun sweepClear(level: Level, from: Vec3, to: Vec3, minY: Double): Boolean {
+        val bodyMinY = minY
+        val bodyMaxY = minY + PLAYER_HEIGHT
+        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
+            return false
+        }
         return sweep(level, from, to) { _, x, z ->
             val feet = BlockPos.containing(x, minY + EPS, z)
             hasClearanceAt(level, x, minY, z, feet)
@@ -67,6 +78,11 @@ object StandingPositions {
     }
 
     fun sweepClearInterpolated(level: Level, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): Boolean {
+        val bodyMinY = min(fromFloor, toFloor)
+        val bodyMaxY = max(fromFloor, toFloor) + PLAYER_HEIGHT
+        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
+            return false
+        }
         return sweep(level, from, to) { t, x, z ->
             val floorY = fromFloor + (toFloor - fromFloor) * t
             val feet = BlockPos.containing(x, floorY + EPS, z)
@@ -169,6 +185,88 @@ object StandingPositions {
 
     private fun collision(level: Level, pos: BlockPos): VoxelShape {
         return level.getBlockState(pos).getCollisionShape(level, pos)
+    }
+
+    /**
+     * Mirrors vanilla WalkNodeEvaluator.isDiagonalValid for player-width entities:
+     * cutting a grid corner flanked by two fence/wall posts is impassable.
+     */
+    private fun cutsBlockedPostDiagonal(
+        level: Level,
+        x0: Double,
+        z0: Double,
+        x1: Double,
+        z1: Double,
+        bodyMinY: Double,
+        bodyMaxY: Double,
+    ): Boolean {
+        val dx = x1 - x0
+        val dz = z1 - z0
+        if (abs(dx) <= EPS || abs(dz) <= EPS) return false
+
+        val minCx = ceil(min(x0, x1) - CORNER_T_EPS).toInt()
+        val maxCx = floor(max(x0, x1) + CORNER_T_EPS).toInt()
+        val minCz = ceil(min(z0, z1) - CORNER_T_EPS).toInt()
+        val maxCz = floor(max(z0, z1) + CORNER_T_EPS).toInt()
+        if (minCx > maxCx || minCz > maxCz) return false
+
+        val posA = BlockPos.MutableBlockPos()
+        val posB = BlockPos.MutableBlockPos()
+        val minBlockY = Mth.floor(bodyMinY)
+        val maxBlockY = Mth.floor(bodyMaxY - EPS)
+
+        for (cx in minCx..maxCx) {
+            val tX = (cx - x0) / dx
+            if (tX < -CORNER_T_EPS || tX > 1.0 + CORNER_T_EPS) continue
+            for (cz in minCz..maxCz) {
+                val tZ = (cz - z0) / dz
+                if (tZ < -CORNER_T_EPS || tZ > 1.0 + CORNER_T_EPS) continue
+                if (abs(tX - tZ) > CORNER_T_EPS) continue
+
+                // Flanking cells for the corner cut (vanilla east/north neighbors relative to step).
+                if (dx > 0.0 && dz > 0.0) {
+                    posA.set(cx, 0, cz - 1)
+                    posB.set(cx - 1, 0, cz)
+                } else if (dx > 0.0 && dz < 0.0) {
+                    posA.set(cx, 0, cz)
+                    posB.set(cx - 1, 0, cz - 1)
+                } else if (dx < 0.0 && dz > 0.0) {
+                    posA.set(cx - 1, 0, cz - 1)
+                    posB.set(cx, 0, cz)
+                } else {
+                    posA.set(cx - 1, 0, cz)
+                    posB.set(cx, 0, cz - 1)
+                }
+
+                for (y in minBlockY..maxBlockY) {
+                    posA.y = y
+                    posB.y = y
+                    if (isBlockingPost(level, posA, bodyMinY, bodyMaxY) &&
+                        isBlockingPost(level, posB, bodyMinY, bodyMaxY)
+                    ) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    private fun isPostLike(state: BlockState): Boolean {
+        if (state.`is`(BlockTags.FENCES) || state.`is`(BlockTags.WALLS)) return true
+        val block = state.block
+        return block is FenceGateBlock && !state.getValue(FenceGateBlock.OPEN)
+    }
+
+    private fun isBlockingPost(level: Level, pos: BlockPos, bodyMinY: Double, bodyMaxY: Double): Boolean {
+        if (!level.isLoaded(pos)) return false
+        val state = level.getBlockState(pos)
+        if (!isPostLike(state)) return false
+        val shape = state.getCollisionShape(level, pos)
+        if (shape.isEmpty) return false
+        val shapeMin = pos.y + shape.min(Direction.Axis.Y)
+        val shapeMax = pos.y + shape.max(Direction.Axis.Y)
+        return bodyMinY < shapeMax - EPS && bodyMaxY > shapeMin + EPS
     }
 
     private fun isInWorld(level: Level, pos: BlockPos): Boolean {
