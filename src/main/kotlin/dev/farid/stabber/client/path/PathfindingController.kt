@@ -3,8 +3,10 @@ package dev.farid.stabber.client.path
 import dev.farid.stabber.client.StabberKeys
 import dev.farid.stabber.client.target.TargetManager
 import net.minecraft.client.Minecraft
+import net.minecraft.core.BlockPos
 import net.minecraft.network.chat.Component
 import net.minecraft.world.entity.LivingEntity
+import net.minecraft.world.level.Level
 
 object PathfindingController {
     var path: PathResult = PathResult.EMPTY
@@ -14,6 +16,7 @@ object PathfindingController {
         private set
 
     private var hadTarget = false
+    private var lastTargetStanding: BlockPos? = null
 
     fun tick(minecraft: Minecraft) {
         handleInput(minecraft)
@@ -37,6 +40,19 @@ object PathfindingController {
         }
 
         hadTarget = true
+        if (!active) return
+
+        val target = TargetManager.target ?: run {
+            stopPathfinding()
+            return
+        }
+
+        val standing = AStarPathfinder.resolveStanding(level, target.blockPosition())?.pos ?: return
+        if (standing == lastTargetStanding) return
+
+        if (!recomputeFromWalkBack(level, standing, target.blockPosition())) {
+            stopPathfinding()
+        }
     }
 
     /**
@@ -58,6 +74,8 @@ object PathfindingController {
         path = result
         active = true
         hadTarget = true
+        lastTargetStanding = AStarPathfinder.resolveStanding(level, target.blockPosition())?.pos
+            ?: result.nodes.last().pos
         return true
     }
 
@@ -65,6 +83,30 @@ object PathfindingController {
         TargetManager.clear()
         hadTarget = false
         stopPathfinding()
+    }
+
+    /**
+     * When the target moves, try recomputing from the 2nd-last path node, then 3rd-last, etc.
+     * Keeps the path prefix and splices on a complete suffix.
+     */
+    private fun recomputeFromWalkBack(level: Level, newStanding: BlockPos, goalHint: BlockPos): Boolean {
+        val nodes = path.nodes
+        if (nodes.size < 2) return false
+
+        for (i in (nodes.size - 2) downTo 0) {
+            val suffix = AStarPathfinder.find(level, nodes[i].pos, goalHint)
+            if (!suffix.complete || suffix.nodes.isEmpty()) continue
+
+            val prefix = nodes.subList(0, i)
+            path = PathResult(
+                nodes = prefix + suffix.nodes,
+                complete = true,
+                goal = suffix.goal,
+            )
+            lastTargetStanding = newStanding
+            return true
+        }
+        return false
     }
 
     private fun handleInput(minecraft: Minecraft) {
@@ -87,5 +129,6 @@ object PathfindingController {
     private fun stopPathfinding() {
         path = PathResult.EMPTY
         active = false
+        lastTargetStanding = null
     }
 }
