@@ -163,9 +163,16 @@ object PathFollower {
         lockedNode = node.pos
         updateOffPath(fix.crossTrack)
 
+        // Past the final waypoint with the target still out of reach: nothing left to steer along, so
+        // stop rather than keep walking forward off the end of the path.
         val remaining = PathProgress.remainingLength(nodes, fix)
-        val carrot = if (remaining < AIM_HOLD_XZ) null else PathProgress.carrot(nodes, fix, LOOKAHEAD)
-        if (carrot != null && horizontalDist(player, carrot) >= AIM_HOLD_XZ) {
+        if (remaining < AIM_HOLD_XZ) {
+            releaseControls()
+            return
+        }
+
+        val carrot = PathProgress.carrot(nodes, fix, LOOKAHEAD)
+        if (horizontalDist(player, carrot) >= AIM_HOLD_XZ) {
             RotationController.lookAt(player, carrot.add(0.0, player.eyeHeight.toDouble(), 0.0), TURN_MAX_STEP)
         }
 
@@ -176,7 +183,7 @@ object PathFollower {
         val strafeLeft = steerBucket < 0
         val strafeRight = steerBucket > 0
 
-        val yawError = abs(Mth.degreesDifference(player.yRot, aimYaw(player, carrot)))
+        val yawError = abs(Mth.degreesDifference(player.yRot, yawToward(player, carrot)))
         val sprint = forward && yawError <= SPRINT_YAW_TOLERANCE && remaining > SPRINT_MIN_REMAINING
 
         MovementController.apply(
@@ -256,9 +263,10 @@ object PathFollower {
      *
      * This is what lets the head aim past a corner without the body following it wide.
      */
-    private fun travelDirection(fix: PathProgress.Fix, player: LocalPlayer, carrot: Vec3?): Float {
+    private fun travelDirection(fix: PathProgress.Fix, player: LocalPlayer, carrot: Vec3): Float {
         if (fix.dirX == 0.0 && fix.dirZ == 0.0) {
-            return if (carrot == null) player.yRot else yawToward(player, carrot)
+            lastCrossTrack = 0.0
+            return yawToward(player, carrot)
         }
 
         val derivative = fix.crossTrack - lastCrossTrack
@@ -306,10 +314,6 @@ object PathFollower {
             offPathTicks = 0
         }
         offPath = offPathTicks >= OFF_PATH_TICKS
-    }
-
-    private fun aimYaw(player: LocalPlayer, carrot: Vec3?): Float {
-        return if (carrot == null) player.yRot else yawToward(player, carrot)
     }
 
     private fun horizontalDist(player: LocalPlayer, point: Vec3): Double {

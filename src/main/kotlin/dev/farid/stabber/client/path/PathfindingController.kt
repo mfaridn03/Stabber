@@ -136,12 +136,12 @@ object PathfindingController {
 
             minecraft.execute {
                 if (id != jobId.get() || cancelled.get()) return@execute
-                applyRawResult(minecraft, result, notifyFailure)
+                applyResult(minecraft, result, notifyFailure)
             }
         }
     }
 
-    private fun applyRawResult(minecraft: Minecraft, result: PathResult, notifyFailure: Boolean) {
+    private fun applyResult(minecraft: Minecraft, result: PathResult, notifyFailure: Boolean) {
         if (!active) return
         if (!result.complete || result.raw.isEmpty()) {
             if (notifyFailure) {
