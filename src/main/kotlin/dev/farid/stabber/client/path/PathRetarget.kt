@@ -33,11 +33,11 @@ object PathRetarget {
         for (i in (remaining.size - 2) downTo 0) {
             if (cancelled.get()) return null
             val suffix = AStarPathfinder.find(world, remaining[i].pos, goalHint, cancelled) ?: return null
-            if (!suffix.complete || suffix.nodes.isEmpty()) continue
+            if (!suffix.complete || suffix.raw.isEmpty()) continue
 
             val prefix = remaining.subList(0, i)
             val spliced = PathResult(
-                nodes = PathStringPuller.pull(world, prefix + suffix.nodes),
+                raw = PathSimplifier.simplify(prefix + suffix.raw),
                 complete = true,
                 goal = suffix.goal,
             )
@@ -82,10 +82,10 @@ object PathRetarget {
         var path = initial
         var i = 0
         var repairs = 0
-        val maxRepairs = path.nodes.size.coerceAtLeast(1)
-        while (i < path.nodes.size - 1 && repairs < maxRepairs) {
+        val maxRepairs = path.raw.size.coerceAtLeast(1)
+        while (i < path.raw.size - 1 && repairs < maxRepairs) {
             if (cancelled.get()) return null
-            val nodes = path.nodes
+            val nodes = path.raw
             val end = nodes.last().pos
             val previous = nodes[i]
             val next = nodes[i + 1]
@@ -95,20 +95,20 @@ object PathRetarget {
             }
 
             val suffix = AStarPathfinder.find(world, previous.pos, goalHint, cancelled) ?: return null
-            if (!suffix.complete || suffix.nodes.isEmpty()) {
+            if (!suffix.complete || suffix.raw.isEmpty()) {
                 i++
                 continue
             }
 
-            val suffixEnd = suffix.nodes.last().pos
-            val suffixNext = suffix.nodes.getOrNull(1)
+            val suffixEnd = suffix.raw.last().pos
+            val suffixNext = suffix.raw.getOrNull(1)
             if (suffixNext != null && suffixNext.pos.distSqr(suffixEnd) >= previous.pos.distSqr(suffixEnd)) {
                 i++
                 continue
             }
 
             path = PathResult(
-                nodes = PathStringPuller.pull(world, nodes.subList(0, i) + suffix.nodes),
+                raw = PathSimplifier.simplify(nodes.subList(0, i) + suffix.raw),
                 complete = true,
                 goal = suffix.goal,
             )

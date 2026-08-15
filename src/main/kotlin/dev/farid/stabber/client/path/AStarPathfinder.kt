@@ -146,7 +146,7 @@ object AStarPathfinder {
                 cursor = cursor.parent
             }
             nodes.reverse()
-            return PathStringPuller.pull(level, nodes)
+            return PathSimplifier.simplify(nodes)
         }
 
         private fun expand(current: PathNode) {

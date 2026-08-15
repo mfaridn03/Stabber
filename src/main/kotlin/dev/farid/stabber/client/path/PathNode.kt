@@ -24,10 +24,15 @@ class PathNode(
 }
 
 data class PathResult(
-    val nodes: List<PathNode>,
+    val raw: List<PathNode>,
     val complete: Boolean,
     val goal: BlockPos?,
+    val optimized: List<PathNode>? = null,
 ) {
+    /** Best path for display/follow: string-pulled when ready, otherwise raw. */
+    val nodes: List<PathNode>
+        get() = optimized ?: raw
+
     companion object {
         val EMPTY = PathResult(emptyList(), complete = false, goal = null)
     }
