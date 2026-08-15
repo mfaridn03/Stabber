@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "stabber",
+  "version": "${version}",
+  "name": "Stabber",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/stabber/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.farid.stabber.client.StabberClient"
+    ],
+    "main": [
+      "dev.farid.stabber.Stabber"
+    ]
+  },
+  "mixins": [
+    "stabber.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-language-kotlin": ">=${kotlin_loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
