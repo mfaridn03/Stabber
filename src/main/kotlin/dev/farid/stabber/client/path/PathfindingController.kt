@@ -1,6 +1,7 @@
 package dev.farid.stabber.client.path
 
 import dev.farid.stabber.client.StabberKeys
+import dev.farid.stabber.client.movement.PathFollower
 import dev.farid.stabber.client.target.TargetManager
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
@@ -90,10 +91,14 @@ object PathfindingController {
         val player = minecraft.player ?: return
         val target = TargetManager.target ?: return
 
-        val startHint = player.blockPosition().immutable()
+        val playerPos = player.blockPosition().immutable()
+        // A recompute keeps the leg being walked: starting from the locked waypoint leaves the current
+        // stride intact and only replans past it, instead of rewriting the path under the follower.
+        val startHint = if (fullSearch) playerPos else PathFollower.lockedNode ?: playerPos
         val goalHint = target.blockPosition().immutable()
         val currentNodes = path.raw
-        val anchors = ArrayList<BlockPos>(currentNodes.size + 2)
+        val anchors = ArrayList<BlockPos>(currentNodes.size + 3)
+        anchors.add(playerPos)
         anchors.add(startHint)
         anchors.add(goalHint)
         for (node in currentNodes) {
