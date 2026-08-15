@@ -8,6 +8,7 @@ import dev.farid.stabber.client.rotation.RotationController
 import dev.farid.stabber.client.target.TargetManager
 import net.minecraft.client.Minecraft
 import net.minecraft.client.player.LocalPlayer
+import net.minecraft.core.BlockPos
 import net.minecraft.util.Mth
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.phys.Vec3
@@ -41,6 +42,14 @@ object PathFollower {
     var pendingStart: Boolean = false
         private set
 
+    /**
+     * Block position of the waypoint currently being walked to, or null when between legs.
+     *
+     * Exposed so a recompute can start from the leg in progress instead of rewriting it.
+     */
+    var lockedNode: BlockPos? = null
+        private set
+
     private var stuckTicks = 0
     private var lastX = 0.0
     private var lastZ = 0.0
@@ -59,6 +68,7 @@ object PathFollower {
         if (PathfindingController.path.nodes.isNotEmpty()) {
             following = true
             pendingStart = false
+            lockedNode = null
             return true
         }
 
@@ -74,6 +84,7 @@ object PathFollower {
         if (pendingStart && PathfindingController.path.nodes.isNotEmpty()) {
             following = true
             pendingStart = false
+            lockedNode = null
         }
 
         if (!following) {
@@ -105,7 +116,7 @@ object PathFollower {
             return
         }
 
-        val followIndex = nextNodeIndex(player, nodes) ?: run {
+        val followIndex = followIndex(player, nodes) ?: run {
             releaseControls()
             return
         }
@@ -132,6 +143,7 @@ object PathFollower {
     fun stop() {
         following = false
         pendingStart = false
+        lockedNode = null
         releaseControls()
         stuckTicks = 0
     }
@@ -147,12 +159,33 @@ object PathFollower {
     }
 
     /**
-     * Closest node by XZ + floor proximity, then advance while the player is within reach of it.
-     * Recomputed each tick so path recomputes stay correct.
+     * Waypoint being walked to. The leg in progress is pinned to [lockedNode], so a path published
+     * mid-stride can only change waypoints past it: re-running the nearest-node scan on a fresh path
+     * can land on a different waypoint, and the view whips around to follow it.
+     *
+     * The lock is released once that waypoint is reached, or if a new path no longer contains it.
      */
-    private fun nextNodeIndex(player: LocalPlayer, nodes: List<PathNode>): Int? {
-        if (nodes.isEmpty()) return null
+    private fun followIndex(player: LocalPlayer, nodes: List<PathNode>): Int? {
+        if (nodes.isEmpty()) {
+            lockedNode = null
+            return null
+        }
 
+        val locked = lockedNode?.let { pos -> nodes.indexOfFirst { it.pos == pos } }?.takeIf { it >= 0 }
+        var index = locked ?: nearestNodeIndex(player, nodes)
+        while (index < nodes.size && reached(player, nodes[index])) {
+            index++
+        }
+        if (index >= nodes.size) {
+            lockedNode = null
+            return null
+        }
+        lockedNode = nodes[index].pos
+        return index
+    }
+
+    /** Closest node by XZ with floor proximity as a tiebreaker. */
+    private fun nearestNodeIndex(player: LocalPlayer, nodes: List<PathNode>): Int {
         var best = 0
         var bestScore = Double.POSITIVE_INFINITY
         val px = player.x
@@ -170,12 +203,7 @@ object PathFollower {
                 best = i
             }
         }
-
-        var index = best
-        while (index < nodes.size && reached(player, nodes[index])) {
-            index++
-        }
-        return if (index < nodes.size) index else null
+        return best
     }
 
     /**
