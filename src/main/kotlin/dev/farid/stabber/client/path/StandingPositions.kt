@@ -4,7 +4,6 @@ import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.tags.BlockTags
 import net.minecraft.util.Mth
-import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.FenceGateBlock
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.phys.AABB
@@ -39,7 +38,7 @@ object StandingPositions {
         return Vec3(pos.x + 0.5, floorY, pos.z + 0.5)
     }
 
-    fun floorHeight(level: Level, feetPos: BlockPos): Double? {
+    fun floorHeight(level: PathingWorld, feetPos: BlockPos): Double? {
         if (!isInWorld(level, feetPos) || !level.isLoaded(feetPos)) return null
 
         val feetMax = surfaceLocalY(level, feetPos)
@@ -57,16 +56,16 @@ object StandingPositions {
         return floorY
     }
 
-    fun isStandable(level: Level, feetPos: BlockPos): Boolean {
+    fun isStandable(level: PathingWorld, feetPos: BlockPos): Boolean {
         val floorY = floorHeight(level, feetPos) ?: return false
         return hasClearance(level, feetPos, floorY)
     }
 
-    fun hasClearance(level: Level, feetPos: BlockPos, floorY: Double): Boolean {
+    fun hasClearance(level: PathingWorld, feetPos: BlockPos, floorY: Double): Boolean {
         return hasClearanceAt(level, feetPos.x + 0.5, floorY, feetPos.z + 0.5, feetPos)
     }
 
-    fun sweepClear(level: Level, from: Vec3, to: Vec3, minY: Double): Boolean {
+    fun sweepClear(level: PathingWorld, from: Vec3, to: Vec3, minY: Double): Boolean {
         val bodyMinY = minY
         val bodyMaxY = minY + PLAYER_HEIGHT
         if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
@@ -78,7 +77,7 @@ object StandingPositions {
         }
     }
 
-    fun sweepClearInterpolated(level: Level, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): Boolean {
+    fun sweepClearInterpolated(level: PathingWorld, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): Boolean {
         val bodyMinY = min(fromFloor, toFloor)
         val bodyMaxY = max(fromFloor, toFloor) + PLAYER_HEIGHT
         if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
@@ -97,7 +96,7 @@ object StandingPositions {
      * so a landing pad is not treated as stand-on while the body is still passing through it.
      */
     fun sweepClearElevating(
-        level: Level,
+        level: PathingWorld,
         from: Vec3,
         to: Vec3,
         fromFloor: Double,
@@ -125,7 +124,7 @@ object StandingPositions {
         return true
     }
 
-    fun supportProfile(level: Level, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): SupportProfile {
+    fun supportProfile(level: PathingWorld, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): SupportProfile {
         val horizontal = hypot(to.x - from.x, to.z - from.z)
         val steps = max(1, ceil(horizontal / SWEEP_STEP).toInt())
         val sampleSpan = horizontal / steps
@@ -152,7 +151,7 @@ object StandingPositions {
     }
 
     private fun sweep(
-        level: Level,
+        level: PathingWorld,
         from: Vec3,
         to: Vec3,
         test: (t: Double, x: Double, z: Double) -> Boolean,
@@ -168,7 +167,7 @@ object StandingPositions {
         return true
     }
 
-    private fun hasClearanceAt(level: Level, x: Double, floorY: Double, z: Double, feetHint: BlockPos): Boolean {
+    private fun hasClearanceAt(level: PathingWorld, x: Double, floorY: Double, z: Double, feetHint: BlockPos): Boolean {
         if (!isInWorld(level, feetHint) || !level.isLoaded(feetHint)) return false
         val aabb = playerAabb(x, floorY, z)
         val ignoreBelow = feetHint.below()
@@ -212,7 +211,7 @@ object StandingPositions {
     }
 
     private fun hasClearanceElevatingAt(
-        level: Level,
+        level: PathingWorld,
         x: Double,
         feetY: Double,
         z: Double,
@@ -256,7 +255,7 @@ object StandingPositions {
         return feetY >= top - STEP_HEIGHT - EPS
     }
 
-    private fun floorNear(level: Level, x: Double, expectedFloor: Double, z: Double): Double? {
+    private fun floorNear(level: PathingWorld, x: Double, expectedFloor: Double, z: Double): Double? {
         val primary = BlockPos.containing(x, expectedFloor + EPS, z)
         floorHeight(level, primary)?.let { return it }
         val below = primary.below()
@@ -265,7 +264,7 @@ object StandingPositions {
         return floorHeight(level, above)
     }
 
-    private fun surfaceLocalY(level: Level, pos: BlockPos): Double? {
+    private fun surfaceLocalY(level: PathingWorld, pos: BlockPos): Double? {
         val shape = collision(level, pos)
         if (shape.isEmpty) return null
         val local = shape.max(Direction.Axis.Y, 0.5, 0.5)
@@ -273,7 +272,7 @@ object StandingPositions {
         return local
     }
 
-    private fun collision(level: Level, pos: BlockPos): VoxelShape {
+    private fun collision(level: PathingWorld, pos: BlockPos): VoxelShape {
         return level.getBlockState(pos).getCollisionShape(level, pos)
     }
 
@@ -282,7 +281,7 @@ object StandingPositions {
      * cutting a grid corner flanked by two fence/wall posts is impassable.
      */
     private fun cutsBlockedPostDiagonal(
-        level: Level,
+        level: PathingWorld,
         x0: Double,
         z0: Double,
         x1: Double,
@@ -348,7 +347,7 @@ object StandingPositions {
         return block is FenceGateBlock && !state.getValue(FenceGateBlock.OPEN)
     }
 
-    private fun isBlockingPost(level: Level, pos: BlockPos, bodyMinY: Double, bodyMaxY: Double): Boolean {
+    private fun isBlockingPost(level: PathingWorld, pos: BlockPos, bodyMinY: Double, bodyMaxY: Double): Boolean {
         if (!level.isLoaded(pos)) return false
         val state = level.getBlockState(pos)
         if (!isPostLike(state)) return false
@@ -359,7 +358,7 @@ object StandingPositions {
         return bodyMinY < shapeMax - EPS && bodyMaxY > shapeMin + EPS
     }
 
-    private fun isInWorld(level: Level, pos: BlockPos): Boolean {
+    private fun isInWorld(level: PathingWorld, pos: BlockPos): Boolean {
         return pos.y > level.minY && !level.isOutsideBuildHeight(pos)
     }
 }

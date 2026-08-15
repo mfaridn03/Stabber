@@ -34,6 +34,10 @@ object AStarPathfinder {
     }.toIntArray()
 
     fun find(level: Level, startHint: BlockPos, goalHint: BlockPos): PathResult {
+        return find(LevelPathingWorld(level), startHint, goalHint)
+    }
+
+    fun find(level: PathingWorld, startHint: BlockPos, goalHint: BlockPos): PathResult {
         val start = resolveStanding(level, startHint) ?: return PathResult.EMPTY
         val goal = resolveStanding(level, goalHint) ?: return PathResult.EMPTY
         val search = Search(level, start, goal)
@@ -41,6 +45,10 @@ object AStarPathfinder {
     }
 
     fun resolveStanding(level: Level, hint: BlockPos): PathNode? {
+        return resolveStanding(LevelPathingWorld(level), hint)
+    }
+
+    fun resolveStanding(level: PathingWorld, hint: BlockPos): PathNode? {
         standingNode(level, hint)?.let { return it }
         var scan = hint.below()
         repeat(8) {
@@ -66,7 +74,7 @@ object AStarPathfinder {
         return best
     }
 
-    private fun standingNode(level: Level, pos: BlockPos): PathNode? {
+    private fun standingNode(level: PathingWorld, pos: BlockPos): PathNode? {
         val floorY = StandingPositions.floorHeight(level, pos) ?: return null
         if (!StandingPositions.hasClearance(level, pos, floorY)) return null
         return PathNode(pos.immutable(), floorY)
@@ -79,7 +87,7 @@ object AStarPathfinder {
     }
 
     private class Search(
-        private val level: Level,
+        private val level: PathingWorld,
         private val start: PathNode,
         private val goal: PathNode,
     ) {
