@@ -2,27 +2,40 @@ package dev.farid.stabber.client.path
 
 import net.minecraft.core.BlockPos
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.max
 
 object PathRetarget {
+    private const val ON_PATH_CHEBYSHEV = 2
+
     /**
-     * When the target moves, recompute from the 2nd-last path node, then 3rd-last, etc.
-     * Keeps the path prefix and splices on a complete suffix.
-     * @return null if cancelled, [PathResult.EMPTY] if no splice was found
+     * When the target moves, drop nodes the player has already left, then splice a new suffix
+     * from the remaining path. If the player is no longer near the old path, search from
+     * their current standing position instead.
+     * @return null if cancelled, [PathResult.EMPTY] if no path was found
      */
     fun recompute(
         world: PathingWorld,
         nodes: List<PathNode>,
+        startHint: BlockPos,
         goalHint: BlockPos,
         cancelled: AtomicBoolean,
     ): PathResult? {
-        if (nodes.size < 2) return PathResult.EMPTY
+        if (cancelled.get()) return null
+        val start = AStarPathfinder.resolveStanding(world, startHint)
+            ?: return PathResult.EMPTY
 
-        for (i in (nodes.size - 2) downTo 0) {
+        val remaining = remainingFromPlayer(nodes, start)
+        if (remaining.size < 2) {
+            return AStarPathfinder.find(world, start.pos, goalHint, cancelled)
+        }
+
+        for (i in (remaining.size - 2) downTo 0) {
             if (cancelled.get()) return null
-            val suffix = AStarPathfinder.find(world, nodes[i].pos, goalHint, cancelled) ?: return null
+            val suffix = AStarPathfinder.find(world, remaining[i].pos, goalHint, cancelled) ?: return null
             if (!suffix.complete || suffix.nodes.isEmpty()) continue
 
-            val prefix = nodes.subList(0, i)
+            val prefix = remaining.subList(0, i)
             val spliced = PathResult(
                 nodes = PathSimplifier.simplify(prefix + suffix.nodes),
                 complete = true,
@@ -30,7 +43,29 @@ object PathRetarget {
             )
             return dropNodesThatRecedeFromGoal(world, spliced, goalHint, cancelled)
         }
-        return PathResult.EMPTY
+        return AStarPathfinder.find(world, start.pos, goalHint, cancelled)
+    }
+
+    private fun remainingFromPlayer(nodes: List<PathNode>, start: PathNode): List<PathNode> {
+        if (nodes.isEmpty()) return listOf(start)
+
+        var best = 0
+        var bestDist = Int.MAX_VALUE
+        for (i in nodes.indices) {
+            val dist = chebyshev(nodes[i].pos, start.pos)
+            if (dist < bestDist) {
+                bestDist = dist
+                best = i
+            }
+        }
+        if (bestDist > ON_PATH_CHEBYSHEV) return emptyList()
+
+        val tail = nodes.subList(best, nodes.size)
+        return if (tail.first().pos == start.pos) tail else listOf(start) + tail
+    }
+
+    private fun chebyshev(a: BlockPos, b: BlockPos): Int {
+        return max(max(abs(a.x - b.x), abs(a.y - b.y)), abs(a.z - b.z))
     }
 
     /**

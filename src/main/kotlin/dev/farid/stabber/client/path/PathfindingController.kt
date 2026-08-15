@@ -111,7 +111,7 @@ object PathfindingController {
             val result = if (fullSearch || currentNodes.size < 2) {
                 AStarPathfinder.find(world, startHint, goalHint, cancelled)
             } else {
-                PathRetarget.recompute(world, currentNodes, goalHint, cancelled)
+                PathRetarget.recompute(world, currentNodes, startHint, goalHint, cancelled)
             }
             if (result == null || cancelled.get()) return@execute
 
