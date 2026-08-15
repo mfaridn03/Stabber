@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 object PathfindingController {
+    /** Ticks between off-path recomputes, so a search in flight is not re-submitted every tick. */
+    private const val OFF_PATH_COOLDOWN = 20
+
     @Volatile
     var path: PathResult = PathResult.EMPTY
         private set
@@ -21,6 +24,7 @@ object PathfindingController {
 
     private var hadTarget = false
     private var submittedGoal: BlockPos? = null
+    private var offPathCooldown = 0
 
     private val jobId = AtomicInteger(0)
     private var inFlightCancel: AtomicBoolean? = null
@@ -55,6 +59,16 @@ object PathfindingController {
 
         val target = TargetManager.target ?: run {
             stopPathfinding()
+            return
+        }
+
+        if (offPathCooldown > 0) offPathCooldown--
+
+        // Far enough off the line that the follower's strafe correction is fighting terrain rather
+        // than tracking. Re-plan from where the player actually is instead of steering them back.
+        if (PathFollower.offPath && offPathCooldown == 0) {
+            offPathCooldown = OFF_PATH_COOLDOWN
+            submit(minecraft, fullSearch = true, notifyFailure = false)
             return
         }
 
@@ -124,16 +138,6 @@ object PathfindingController {
                 if (id != jobId.get() || cancelled.get()) return@execute
                 applyRawResult(minecraft, result, notifyFailure)
             }
-
-            if (cancelled.get() || !result.complete || result.raw.isEmpty()) return@execute
-
-            val pulled = PathStringPuller.pull(world, result.raw)
-            if (cancelled.get()) return@execute
-
-            minecraft.execute {
-                if (id != jobId.get() || cancelled.get()) return@execute
-                applyOptimized(pulled)
-            }
         }
     }
 
@@ -147,12 +151,7 @@ object PathfindingController {
             return
         }
 
-        path = result.copy(optimized = null)
-    }
-
-    private fun applyOptimized(pulled: List<PathNode>) {
-        if (!active || path.raw.isEmpty()) return
-        path = path.copy(optimized = pulled)
+        path = result
     }
 
     private fun handleInput(minecraft: Minecraft) {
@@ -179,5 +178,6 @@ object PathfindingController {
         path = PathResult.EMPTY
         active = false
         submittedGoal = null
+        offPathCooldown = 0
     }
 }
