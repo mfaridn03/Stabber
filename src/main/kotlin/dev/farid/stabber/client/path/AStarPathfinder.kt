@@ -5,7 +5,6 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.Level
-import net.minecraft.world.phys.Vec3
 import java.util.PriorityQueue
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -194,11 +193,35 @@ object AStarPathfinder {
 
             if (dy > StandingPositions.STEP_HEIGHT) {
                 val apex = max(from.floorY, to.floorY)
-                return if (clearAtHeight(fromCentre, toCentre, apex)) MoveType.JUMP else null
+                return if (StandingPositions.sweepClearElevating(
+                        level,
+                        fromCentre,
+                        toCentre,
+                        from.floorY,
+                        to.floorY,
+                        apex,
+                    )
+                ) {
+                    MoveType.JUMP
+                } else {
+                    null
+                }
             }
 
             if (dy < -StandingPositions.STEP_HEIGHT) {
-                return if (clearAtHeight(fromCentre, toCentre, from.floorY)) MoveType.DROP else null
+                return if (StandingPositions.sweepClearElevating(
+                        level,
+                        fromCentre,
+                        toCentre,
+                        from.floorY,
+                        to.floorY,
+                        from.floorY,
+                    )
+                ) {
+                    MoveType.DROP
+                } else {
+                    null
+                }
             }
 
             if (profile.allSupported) {
@@ -218,13 +241,19 @@ object AStarPathfinder {
 
             if (profile.longestGap <= MAX_GAP && dy <= StandingPositions.JUMP_HEIGHT) {
                 val apex = max(from.floorY, to.floorY) + 0.5
-                if (clearAtHeight(fromCentre, toCentre, apex)) return MoveType.JUMP
+                if (StandingPositions.sweepClearElevating(
+                        level,
+                        fromCentre,
+                        toCentre,
+                        from.floorY,
+                        to.floorY,
+                        apex,
+                    )
+                ) {
+                    return MoveType.JUMP
+                }
             }
             return null
-        }
-
-        private fun clearAtHeight(from: Vec3, to: Vec3, minY: Double): Boolean {
-            return StandingPositions.sweepClear(level, from, to, minY)
         }
 
         private fun edgeCost(from: PathNode, to: PathNode, move: MoveType): Double {

@@ -28,6 +28,7 @@ object StandingPositions {
     const val SWEEP_STEP = 0.25
     private const val EPS = 1.0e-4
     private const val CORNER_T_EPS = 1.0e-3
+    private const val SUPPORT_MATCH = 0.05
 
     fun playerAabb(x: Double, floorY: Double, z: Double): AABB {
         val center = Vec3(x, floorY + PLAYER_HEIGHT * 0.5, z)
@@ -88,6 +89,40 @@ object StandingPositions {
             val feet = BlockPos.containing(x, floorY + EPS, z)
             hasClearanceAt(level, x, floorY, z, feet)
         }
+    }
+
+    /**
+     * Jump/drop clearance: interpolate XZ with a feet-Y tent through [fromFloor, apex, toFloor].
+     * Floor supports are ignored only when feet are within STEP_HEIGHT of that support's top —
+     * so a landing pad is not treated as stand-on while the body is still passing through it.
+     */
+    fun sweepClearElevating(
+        level: Level,
+        from: Vec3,
+        to: Vec3,
+        fromFloor: Double,
+        toFloor: Double,
+        apex: Double,
+    ): Boolean {
+        val peak = max(apex, max(fromFloor, toFloor))
+        val bodyMinY = min(fromFloor, min(toFloor, peak))
+        val bodyMaxY = max(fromFloor, max(toFloor, peak)) + PLAYER_HEIGHT
+        if (cutsBlockedPostDiagonal(level, from.x, from.z, to.x, to.z, bodyMinY, bodyMaxY)) {
+            return false
+        }
+
+        val horizontal = hypot(to.x - from.x, to.z - from.z)
+        val horizSteps = max(1, ceil(horizontal / SWEEP_STEP).toInt())
+        val vertSteps = max(1, ceil((peak - min(fromFloor, toFloor)) / SWEEP_STEP).toInt())
+        val steps = max(horizSteps, vertSteps)
+        for (i in 0..steps) {
+            val t = i.toDouble() / steps
+            val x = from.x + (to.x - from.x) * t
+            val z = from.z + (to.z - from.z) * t
+            val feetY = elevatingFeetY(fromFloor, toFloor, peak, t)
+            if (!hasClearanceElevatingAt(level, x, feetY, z, fromFloor, toFloor)) return false
+        }
+        return true
     }
 
     fun supportProfile(level: Level, from: Vec3, to: Vec3, fromFloor: Double, toFloor: Double): SupportProfile {
@@ -164,6 +199,61 @@ object StandingPositions {
             }
         }
         return true
+    }
+
+    private fun elevatingFeetY(fromFloor: Double, toFloor: Double, peak: Double, t: Double): Double {
+        return if (t <= 0.5) {
+            val u = t * 2.0
+            fromFloor + (peak - fromFloor) * u
+        } else {
+            val u = (t - 0.5) * 2.0
+            peak + (toFloor - peak) * u
+        }
+    }
+
+    private fun hasClearanceElevatingAt(
+        level: Level,
+        x: Double,
+        feetY: Double,
+        z: Double,
+        fromFloor: Double,
+        toFloor: Double,
+    ): Boolean {
+        val feetHint = BlockPos.containing(x, feetY + EPS, z)
+        if (!isInWorld(level, feetHint) || !level.isLoaded(feetHint)) return false
+        val aabb = playerAabb(x, feetY, z)
+        val minX = Mth.floor(aabb.minX)
+        val maxX = Mth.floor(aabb.maxX)
+        val minY = Mth.floor(aabb.minY)
+        val maxY = Mth.floor(aabb.maxY)
+        val minZ = Mth.floor(aabb.minZ)
+        val maxZ = Mth.floor(aabb.maxZ)
+        val query = Shapes.create(aabb)
+        val pos = BlockPos.MutableBlockPos()
+        for (bx in minX..maxX) {
+            for (by in minY..maxY) {
+                for (bz in minZ..maxZ) {
+                    pos.set(bx, by, bz)
+                    if (!level.isLoaded(pos)) return false
+                    val shape = collision(level, pos)
+                    if (shape.isEmpty) continue
+                    val world = shape.move(bx.toDouble(), by.toDouble(), bz.toDouble())
+                    if (!Shapes.joinIsNotEmpty(world, query, BooleanOp.AND)) continue
+                    val top = by + shape.max(Direction.Axis.Y)
+                    if (isTraversableSupport(top, feetY, fromFloor, toFloor)) continue
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    private fun isTraversableSupport(top: Double, feetY: Double, fromFloor: Double, toFloor: Double): Boolean {
+        val matchesFrom = abs(top - fromFloor) <= SUPPORT_MATCH
+        val matchesTo = abs(top - toFloor) <= SUPPORT_MATCH
+        if (!matchesFrom && !matchesTo) return false
+        // Only treat as stand-on floor once feet are near the surface — not while phasing through.
+        return feetY >= top - STEP_HEIGHT - EPS
     }
 
     private fun floorNear(level: Level, x: Double, expectedFloor: Double, z: Double): Double? {
