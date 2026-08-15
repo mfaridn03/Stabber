@@ -13,7 +13,7 @@ object StabberCommands {
         ClientCommandRegistrationCallback.EVENT.register { dispatcher, _ ->
             dispatcher.register(
                 ClientCommands.literal("pathfind").executes { context ->
-                    val enabled = PathfindingController.toggleAutoPathfind(context.source.client)
+                    val enabled = PathfindingController.togglePathfind(context.source.client)
                     val msg = if (enabled) "Pathfinding enabled" else "Pathfinding disabled"
                     context.source.sendFeedback(Component.literal(msg))
                     Command.SINGLE_SUCCESS
@@ -27,15 +27,12 @@ object StabberCommands {
                     Command.SINGLE_SUCCESS
                 },
             )
-            // Disabled for now; PathFollower.requestStart() kept for later re-enable.
-            /*
             dispatcher.register(
                 ClientCommands.literal("start").executes {
                     PathFollower.requestStart()
                     Command.SINGLE_SUCCESS
                 },
             )
-            */
         }
     }
 }

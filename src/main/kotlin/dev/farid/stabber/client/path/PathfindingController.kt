@@ -93,11 +93,23 @@ object PathfindingController {
         val goalHint = target.blockPosition().immutable()
         if (goalHint == submittedGoal) return
 
-        submit(minecraft, fullSearch = path.raw.size < 2, notifyFailure = false)
+        submit(minecraft, fullSearch = path.raw.size < 2 || path.endManualPos == null, notifyFailure = false)
+    }
+
+    /**
+     * Toggles manual pathfinding for the currently selected target.
+     */
+    fun togglePathfind(minecraft: Minecraft): Boolean {
+        if (active) {
+            stopPathfinding()
+            return false
+        }
+        return startPathfinding(minecraft)
     }
 
     /**
      * Toggles auto-targeting pathfinding. Returns the new enabled state.
+     * Kept for later re-enable; not wired to `/pathfind`.
      */
     fun toggleAutoPathfind(minecraft: Minecraft): Boolean {
         if (autoMode) {
@@ -311,11 +323,12 @@ object PathfindingController {
         }
 
         val currentNodes = path.raw
-        val extra = ArrayList<BlockPos>(currentNodes.size + 1)
+        val extra = ArrayList<BlockPos>(currentNodes.size + 2)
         extra.add(startHint)
         for (node in currentNodes) {
             extra.add(node.pos)
         }
+        path.endManualPos?.let { extra.add(it) }
         val anchors = HybridPathAssembler.anchors(playerPos, goalHint, extra)
         val playerFeet = player.position()
 
@@ -326,8 +339,24 @@ object PathfindingController {
         val id = jobId.incrementAndGet()
         submittedGoal = goalHint
 
+        val tailOnly = !fullSearch && path.endManualPos != null
+        val prefixRaw = path.raw
+        val endManualPos = path.endManualPos
+        val tailStartIndex = path.tailStartIndex
+
         executor.execute {
-            val result = HybridPathAssembler.assemble(world, playerPos, playerFeet, goalHint, cancelled)
+            val result = if (tailOnly && endManualPos != null) {
+                HybridPathAssembler.reassembleTail(
+                    world,
+                    endManualPos,
+                    prefixRaw,
+                    tailStartIndex,
+                    goalHint,
+                    cancelled,
+                )
+            } else {
+                HybridPathAssembler.assemble(world, playerPos, playerFeet, goalHint, cancelled)
+            }
             if (result == null || cancelled.get()) return@execute
 
             minecraft.execute {
@@ -364,7 +393,7 @@ object PathfindingController {
             TargetManager.select(picked)
             if (!alreadySelected && TargetManager.isTarget(picked)) {
                 minecraft.player?.sendSystemMessage(Component.literal("Target Selected"))
-                hadTarget = true
+                startPathfinding(minecraft)
             } else if (alreadySelected) {
                 hadTarget = false
                 stopPathfinding()

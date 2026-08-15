@@ -14,16 +14,22 @@ object NodeEditController {
     var highlightedId: Int? = null
         private set
 
+    private var warnedPathfindingLock = false
+
     fun toggleEdit(): Boolean {
         editMode = !editMode
         if (!editMode) {
             selectMode = false
             highlightedId = null
+            warnedPathfindingLock = false
         }
         return editMode
     }
 
     fun tick(minecraft: Minecraft) {
+        if (!PathfindingController.active) {
+            warnedPathfindingLock = false
+        }
         if (!editMode) {
             drainClicks()
             highlightedId = null
@@ -32,6 +38,15 @@ object NodeEditController {
         val player = minecraft.player ?: return
         if (minecraft.gui.screen() != null) {
             drainClicks()
+            return
+        }
+        if (PathfindingController.active) {
+            highlightedId = null
+            if (drainMutatingClicks() && !warnedPathfindingLock) {
+                player.sendSystemMessage(Component.literal("Cannot edit nodes while pathfinding"))
+                warnedPathfindingLock = true
+            }
+            while (StabberKeys.selectMode.consumeClick()) {}
             return
         }
 
@@ -46,6 +61,14 @@ object NodeEditController {
             val msg = if (selectMode) "Select mode on" else "Select mode off"
             player.sendSystemMessage(Component.literal(msg))
             if (!selectMode) highlightedId = null
+        }
+        if (selectMode) {
+            while (minecraft.options.keyShift.consumeClick()) {
+                val id = highlightedId
+                if (id != null && ManualNodeGraph.setCurrent(id)) {
+                    NodeGraphStorage.save()
+                }
+            }
         }
         while (StabberKeys.placeNode.consumeClick()) {
             place(minecraft, PlacementKind.NORMAL)
@@ -62,6 +85,7 @@ object NodeEditController {
     }
 
     private fun place(minecraft: Minecraft, kind: PlacementKind) {
+        if (PathfindingController.active) return
         val player = minecraft.player ?: return
         val level = minecraft.level ?: return
         val pos = player.blockPosition()
@@ -75,15 +99,12 @@ object NodeEditController {
             player.sendSystemMessage(Component.literal("Cannot stand here"))
             return
         }
-        val placed = ManualNodeGraph.place(pos, floorY, kind)
-        if (placed == null) {
-            player.sendSystemMessage(Component.literal("Node already exists here"))
-            return
-        }
+        ManualNodeGraph.placeOrConnect(pos, floorY, kind)
         NodeGraphStorage.save()
     }
 
     private fun remove(minecraft: Minecraft) {
+        if (PathfindingController.active) return
         val player = minecraft.player ?: return
         if (!selectMode) return
         val id = highlightedId ?: return
@@ -93,11 +114,17 @@ object NodeEditController {
         }
     }
 
+    private fun drainMutatingClicks(): Boolean {
+        var clicked = false
+        while (StabberKeys.placeNode.consumeClick()) { clicked = true }
+        while (StabberKeys.placeJumpNode.consumeClick()) { clicked = true }
+        while (StabberKeys.placeDropNode.consumeClick()) { clicked = true }
+        while (StabberKeys.removeNode.consumeClick()) { clicked = true }
+        return clicked
+    }
+
     private fun drainClicks() {
-        while (StabberKeys.placeNode.consumeClick()) {}
-        while (StabberKeys.placeJumpNode.consumeClick()) {}
-        while (StabberKeys.placeDropNode.consumeClick()) {}
-        while (StabberKeys.removeNode.consumeClick()) {}
+        drainMutatingClicks()
         while (StabberKeys.selectMode.consumeClick()) {}
     }
 }
