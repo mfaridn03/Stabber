@@ -104,9 +104,51 @@ object PathfindingController {
                 goal = suffix.goal,
             )
             lastTargetStanding = newStanding
-            return true
+            return dropNodesThatRecedeFromGoal(level, goalHint)
         }
         return false
+    }
+
+    /**
+     * Each step of the spliced path must get closer to the end node.
+     * A U-turning target leaves a walk-history shaped prefix that recedes from the new goal;
+     * when that happens, recompute from the previous node so the suffix can cut the loop.
+     */
+    private fun dropNodesThatRecedeFromGoal(level: Level, goalHint: BlockPos): Boolean {
+        var i = 0
+        var repairs = 0
+        val maxRepairs = path.nodes.size.coerceAtLeast(1)
+        while (i < path.nodes.size - 1 && repairs < maxRepairs) {
+            val nodes = path.nodes
+            val end = nodes.last().pos
+            val previous = nodes[i]
+            val next = nodes[i + 1]
+            if (next.pos.distSqr(end) < previous.pos.distSqr(end)) {
+                i++
+                continue
+            }
+
+            val suffix = AStarPathfinder.find(level, previous.pos, goalHint)
+            if (!suffix.complete || suffix.nodes.isEmpty()) {
+                i++
+                continue
+            }
+
+            val suffixEnd = suffix.nodes.last().pos
+            val suffixNext = suffix.nodes.getOrNull(1)
+            if (suffixNext != null && suffixNext.pos.distSqr(suffixEnd) >= previous.pos.distSqr(suffixEnd)) {
+                i++
+                continue
+            }
+
+            path = PathResult(
+                nodes = PathSimplifier.simplify(nodes.subList(0, i) + suffix.nodes),
+                complete = true,
+                goal = suffix.goal,
+            )
+            repairs++
+        }
+        return true
     }
 
     private fun handleInput(minecraft: Minecraft) {
