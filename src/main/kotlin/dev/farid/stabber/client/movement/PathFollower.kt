@@ -19,8 +19,12 @@ import kotlin.math.hypot
  * Following starts only via [requestStart] (`/start`), never from pathfinding alone.
  */
 object PathFollower {
-    private const val NODE_REACH_XZ = 0.5
-    private const val NODE_REACH_Y = 0.6
+    /** Covers a full 1x1 cell (corner is ~0.71 from centre). */
+    private const val NODE_REACH_XZ = 0.75
+    /** Don't aim at a waypoint this close; look further along the path. */
+    private const val AIM_MIN_XZ = 1.5
+    /** Degrees per frame while path-following: a brisk head turn, not an instant snap. */
+    private const val TURN_MAX_STEP = 9.0
     private const val SPRINT_YAW_TOLERANCE = 20.0f
     private const val SPRINT_MIN_REMAINING = 2
     private const val STUCK_SPEED_EPS = 0.01
@@ -101,18 +105,18 @@ object PathFollower {
             return
         }
 
-        val index = nextNodeIndex(player, nodes) ?: run {
+        val followIndex = nextNodeIndex(player, nodes) ?: run {
             releaseControls()
             return
         }
-        val node = nodes[index]
-        val aim = StandingPositions.nodeCentre(node.pos, node.floorY)
+        val node = nodes[followIndex]
+        val aim = aimPoint(player, nodes, followIndex)
 
         val yaw = yawToward(player, aim)
-        RotationController.rotateTo(yaw, null)
+        RotationController.lookAt(player, aim, TURN_MAX_STEP)
 
         val yawError = abs(Mth.degreesDifference(player.yRot, yaw))
-        val remaining = nodes.size - index
+        val remaining = nodes.size - followIndex
         val sprint = yawError <= SPRINT_YAW_TOLERANCE && remaining > SPRINT_MIN_REMAINING
 
         val needJump = shouldJump(player, node)
@@ -174,12 +178,31 @@ object PathFollower {
         return if (index < nodes.size) index else null
     }
 
+    /**
+     * Where the head looks: the first waypoint far enough away to give a stable bearing, sighted at
+     * eye level rather than at its floor. Node 0 is the cell the path started from, so it is never a
+     * look target while anything follows it — aiming at your own feet is what makes the view snap.
+     */
+    private fun aimPoint(player: LocalPlayer, nodes: List<PathNode>, followIndex: Int): Vec3 {
+        val last = nodes.lastIndex
+        var index = followIndex.coerceAtLeast(if (last > 0) 1 else 0)
+        while (index < last && horizontalDist(player, nodes[index]) < AIM_MIN_XZ) {
+            index++
+        }
+        val node = nodes[index]
+        val centre = StandingPositions.nodeCentre(node.pos, node.floorY)
+        return Vec3(centre.x, centre.y + player.eyeHeight, centre.z)
+    }
+
     private fun reached(player: LocalPlayer, node: PathNode): Boolean {
+        if (player.blockPosition() == node.pos) return true
+        return horizontalDist(player, node) <= NODE_REACH_XZ
+    }
+
+    private fun horizontalDist(player: LocalPlayer, node: PathNode): Double {
         val cx = node.pos.x + 0.5
         val cz = node.pos.z + 0.5
-        val xz = hypot(player.x - cx, player.z - cz)
-        val y = abs(player.y - node.floorY)
-        return xz <= NODE_REACH_XZ && y <= NODE_REACH_Y
+        return hypot(player.x - cx, player.z - cz)
     }
 
     private fun yawToward(player: LocalPlayer, point: Vec3): Float {
