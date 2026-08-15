@@ -264,12 +264,49 @@ object StandingPositions {
         return floorHeight(level, above)
     }
 
+    /**
+     * Top of [pos]'s collision under the player's footprint, in block-local coordinates.
+     *
+     * Sampling a single point (the block centre) is ambiguous for shapes with more than one top —
+     * VoxelShape.max resolves its arguments to voxel cells rather than interpolating, so a stair
+     * reports 0.5 or 1.0 purely depending on its facing. Taking the max over the footprint is
+     * facing-independent and matches the surface the player would actually be lifted onto.
+     */
     private fun surfaceLocalY(level: PathingWorld, pos: BlockPos): Double? {
         val shape = collision(level, pos)
         if (shape.isEmpty) return null
-        val local = shape.max(Direction.Axis.Y, 0.5, 0.5)
+        val half = PLAYER_WIDTH * 0.5
+        val local = shapeTopWithin(
+            shape,
+            0.5 - half,
+            0.5 + half,
+            0.5 - half,
+            0.5 + half,
+            Double.NEGATIVE_INFINITY,
+            Double.POSITIVE_INFINITY,
+        )
         if (!local.isFinite() || local <= 0.0) return null
         return local
+    }
+
+    /** Highest box top of [shape] overlapping the given local XZ window, restricted to (lyMin, lyMax]. */
+    private fun shapeTopWithin(
+        shape: VoxelShape,
+        lx0: Double,
+        lx1: Double,
+        lz0: Double,
+        lz1: Double,
+        lyMin: Double,
+        lyMax: Double,
+    ): Double {
+        var best = Double.NEGATIVE_INFINITY
+        shape.forAllBoxes { x1, _, z1, x2, y2, z2 ->
+            val overlapsFootprint = x2 > lx0 + EPS && x1 < lx1 - EPS && z2 > lz0 + EPS && z1 < lz1 - EPS
+            if (overlapsFootprint && y2 > lyMin - EPS && y2 < lyMax + EPS && y2 > best) {
+                best = y2
+            }
+        }
+        return best
     }
 
     private fun collision(level: PathingWorld, pos: BlockPos): VoxelShape {
