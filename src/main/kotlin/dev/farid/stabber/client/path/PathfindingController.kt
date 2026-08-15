@@ -84,9 +84,15 @@ object PathfindingController {
      */
     fun startPathfinding(minecraft: Minecraft): Boolean {
         val level = minecraft.level ?: return false
-        if (minecraft.player == null) return false
+        val player = minecraft.player ?: return false
         if (!TargetManager.validate(level)) return false
-        if (TargetManager.target == null) return false
+        val target = TargetManager.target ?: return false
+        val playerPos = player.blockPosition()
+        val goalHint = target.blockPosition()
+        if (!PathfindingRegion.contains(playerPos) || !PathfindingRegion.contains(goalHint)) {
+            player.sendSystemMessage(Component.literal("Outside pathfinding region"))
+            return false
+        }
 
         active = true
         hadTarget = true
@@ -110,6 +116,13 @@ object PathfindingController {
         // stride intact and only replans past it, instead of rewriting the path under the follower.
         val startHint = if (fullSearch) playerPos else PathFollower.lockedNode ?: playerPos
         val goalHint = target.blockPosition().immutable()
+        if (!PathfindingRegion.contains(playerPos) || !PathfindingRegion.contains(goalHint)) {
+            if (notifyFailure) {
+                player.sendSystemMessage(Component.literal("Outside pathfinding region"))
+            }
+            stopPathfinding()
+            return
+        }
         val currentNodes = path.raw
         val anchors = ArrayList<BlockPos>(currentNodes.size + 3)
         anchors.add(playerPos)

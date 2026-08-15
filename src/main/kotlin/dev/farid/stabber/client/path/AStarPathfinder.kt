@@ -47,8 +47,14 @@ object AStarPathfinder {
         cancelled: AtomicBoolean? = null,
     ): PathResult? {
         if (cancelled?.get() == true) return null
+        if (!PathfindingRegion.contains(startHint) || !PathfindingRegion.contains(goalHint)) {
+            return PathResult.EMPTY
+        }
         val start = resolveStanding(level, startHint) ?: return PathResult.EMPTY
         val goal = resolveStanding(level, goalHint) ?: return PathResult.EMPTY
+        if (!PathfindingRegion.contains(start.pos) || !PathfindingRegion.contains(goal.pos)) {
+            return PathResult.EMPTY
+        }
         val search = Search(level, start, goal, cancelled)
         return search.run()
     }
@@ -162,6 +168,7 @@ object AStarPathfinder {
                 val candidates = verticalCandidates(current.pos.x + dx, current.pos.y, current.pos.z + dz)
                 for (standing in candidates) {
                     if (closed.contains(standing.packed)) continue
+                    if (!PathfindingRegion.contains(standing.pos)) continue
                     if (chebyshev(start.pos, standing.pos) > MAX_RADIUS) continue
                     if (sweeps >= SWEEPS_PER_NODE) return
                     sweeps++
