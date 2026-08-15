@@ -41,7 +41,7 @@ object PathFollower {
     /** Blocks of sideways correction per block of offset from the path line. */
     private const val CROSSTRACK_GAIN = 1.0
     /** Damping on the offset's rate of change, so the correction does not overshoot into a weave. */
-    private const val CROSSTRACK_DAMPING = 4.0
+    private const val CROSSTRACK_DAMPING = 3.0
     /** Caps the correction at 45 degrees off the segment. */
     private const val MAX_LATERAL = 1.0
 
