@@ -151,7 +151,7 @@ object PathFollower {
         }
 
         syncToPath(player, nodes)
-        val fix = PathProgress.project(nodes, player.x, player.z, progressIndex, NODE_REACH_XZ)
+        val fix = PathProgress.project(nodes, player.x, player.y, player.z, progressIndex, NODE_REACH_XZ)
         if (fix == null) {
             followSingleNode(player, nodes.first())
             return
@@ -218,7 +218,7 @@ object PathFollower {
         val pos = player.getPosition(partialTick)
         val eyeY = player.eyeHeight.toDouble()
 
-        val fix = PathProgress.project(nodes, pos.x, pos.z, progressIndex, NODE_REACH_XZ)
+        val fix = PathProgress.project(nodes, pos.x, pos.y, pos.z, progressIndex, NODE_REACH_XZ)
         if (fix == null) {
             val node = nodes.first()
             val centre = StandingPositions.nodeCentre(node.pos, node.floorY)

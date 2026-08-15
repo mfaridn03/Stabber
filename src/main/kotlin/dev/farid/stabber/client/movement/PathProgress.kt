@@ -3,6 +3,7 @@ package dev.farid.stabber.client.movement
 import dev.farid.stabber.client.path.MoveType
 import dev.farid.stabber.client.path.PathNode
 import net.minecraft.world.phys.Vec3
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 
@@ -15,6 +16,8 @@ import kotlin.math.min
  */
 object PathProgress {
     private const val EPS = 1.0e-6
+    /** Must be on the landing slab, not merely past it in XZ, to leave a jump or drop. */
+    private const val LANDING_REACH_Y = 0.6
 
     /**
      * @param index segment from `nodes[index]` to `nodes[index + 1]`
@@ -35,19 +38,28 @@ object PathProgress {
      * Advances from [fromIndex] past every segment the player has already left, then measures their
      * offset from the segment they are on. Never returns a segment earlier than [fromIndex].
      *
-     * A segment counts as left once the player's projection passes its end node (a half-plane test on
-     * position, so a wall bump or a jump cannot fake it) or once they are within [reachRadius] of that
-     * node, which covers arriving off-axis at a tight corner.
+     * A walk segment counts as left once the player's XZ projection passes its end node, or once they
+     * are within [reachRadius] of that node, which covers arriving off-axis at a tight corner.
+     *
+     * Jump and drop landings also require the player's feet to be near the landing height. XZ travel
+     * during a sprint-jump otherwise marks several following treads done while still in the air.
      *
      * Null when [nodes] has no segment to sit on.
      */
-    fun project(nodes: List<PathNode>, x: Double, z: Double, fromIndex: Int, reachRadius: Double): Fix? {
+    fun project(
+        nodes: List<PathNode>,
+        x: Double,
+        y: Double,
+        z: Double,
+        fromIndex: Int,
+        reachRadius: Double,
+    ): Fix? {
         val lastSegment = nodes.size - 2
         if (lastSegment < 0) return null
 
         var index = fromIndex.coerceIn(0, lastSegment)
         while (index < lastSegment) {
-            if (rawT(nodes, index, x, z) < 1.0 && distanceTo(nodes[index + 1], x, z) > reachRadius) break
+            if (!hasLeft(nodes, index, x, y, z, reachRadius)) break
             index++
         }
 
@@ -119,6 +131,22 @@ object PathProgress {
             total += segmentLength(nodes, index)
         }
         return total
+    }
+
+    private fun hasLeft(
+        nodes: List<PathNode>,
+        index: Int,
+        x: Double,
+        y: Double,
+        z: Double,
+        reachRadius: Double,
+    ): Boolean {
+        val end = nodes[index + 1]
+        val pastEnd = rawT(nodes, index, x, z) >= 1.0
+        val xzClose = distanceTo(end, x, z) <= reachRadius
+        if (!pastEnd && !xzClose) return false
+        if (end.incoming == MoveType.WALK) return true
+        return abs(y - end.floorY) <= LANDING_REACH_Y
     }
 
     /** Unclamped projection parameter; at or above 1.0 the player is past the segment's end node. */
