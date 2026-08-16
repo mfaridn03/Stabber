@@ -21,11 +21,11 @@ object AStarPathfinder {
     const val VERTICAL_COST_WEIGHT = 1.05
     internal const val MAX_DROP_SCAN = 64
     private const val GOAL_SEARCH_RADIUS = 2
-    private const val SWEEPS_PER_NODE = 8
+    private const val SWEEPS_PER_NODE = 80
     private const val EPS = 1.0e-6
 
     /** Cardinal and diagonal neighbours only (one block per expansion). */
-    private val OFFSETS: IntArray = intArrayOf(
+    private val OFFSETS_8: IntArray = intArrayOf(
         0, -1,
         1, -1,
         1, 0,
@@ -35,6 +35,16 @@ object AStarPathfinder {
         -1, 0,
         -1, -1,
     )
+
+    private val OFFSETS: IntArray = buildList {
+        for (dx in -3..3) {
+            for (dz in -3..3) {
+                if (dx == 0 && dz == 0) continue
+                add(dx)
+                add(dz)
+            }
+        }
+    }.toIntArray()
 
     fun find(level: Level, startHint: BlockPos, goalHint: BlockPos): PathResult {
         return find(LevelPathingWorld(level), startHint, goalHint) ?: PathResult.EMPTY
