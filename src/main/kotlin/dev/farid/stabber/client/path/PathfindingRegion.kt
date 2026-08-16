@@ -10,7 +10,10 @@ object PathfindingRegion {
     const val MIN_Y = 82
     const val MAX_Y = 111
 
+    var debugMode: Boolean = false
+
     fun contains(pos: BlockPos): Boolean {
+        if (debugMode) return true
         return pos.x in MIN_X..MAX_X && pos.z in MIN_Z..MAX_Z && pos.y in MIN_Y..MAX_Y
     }
 }

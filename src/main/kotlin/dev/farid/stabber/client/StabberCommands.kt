@@ -4,6 +4,7 @@ import com.mojang.brigadier.Command
 import dev.farid.stabber.client.movement.PathFollower
 import dev.farid.stabber.client.path.NodeEditController
 import dev.farid.stabber.client.path.PathfindingController
+import dev.farid.stabber.client.path.PathfindingRegion
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands
 import net.minecraft.network.chat.Component
@@ -32,6 +33,14 @@ object StabberCommands {
                     PathFollower.requestStart()
                     Command.SINGLE_SUCCESS
                 },
+            )
+            dispatcher.register(
+                ClientCommands.literal("debug").executes { context ->
+                    PathfindingRegion.debugMode = !PathfindingRegion.debugMode
+                    val msg = if (PathfindingRegion.debugMode) "Debug mode enabled" else "Debug mode disabled"
+                    context.source.sendFeedback(Component.literal(msg))
+                    Command.SINGLE_SUCCESS
+                }
             )
         }
     }
