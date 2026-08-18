@@ -29,7 +29,18 @@ data class ManualGraphSnapshot(
     val nodes: Map<Int, ManualNode>,
     val edges: List<ManualEdge>,
     val lastPlacedId: Int?,
+    val adjacency: Map<Int, List<ManualEdge>> = buildAdjacency(edges),
 ) {
+    companion object {
+        fun buildAdjacency(edges: List<ManualEdge>): Map<Int, List<ManualEdge>> {
+            val out = HashMap<Int, ArrayList<ManualEdge>>()
+            for (edge in edges) {
+                out.getOrPut(edge.from) { ArrayList() }.add(edge)
+            }
+            return out
+        }
+    }
+
     fun nearestN(worldPos: Vec3, limit: Int = 3): List<ManualNode> {
         if (limit <= 0 || nodes.isEmpty()) return emptyList()
         return nodes.values
@@ -47,6 +58,7 @@ data class ManualGraphSnapshot(
 object ManualNodeGraph {
     private val nodes = LinkedHashMap<Int, ManualNode>()
     private val edges = ArrayList<ManualEdge>()
+    private val adjacency = HashMap<Int, ArrayList<ManualEdge>>()
     private var nextId = 1
     var lastPlacedId: Int? = null
         private set
@@ -57,6 +69,7 @@ object ManualNodeGraph {
             nodes = LinkedHashMap(nodes),
             edges = ArrayList(edges),
             lastPlacedId = lastPlacedId,
+            adjacency = adjacency.mapValues { (_, outgoing) -> outgoing.toList() },
         )
     }
 
@@ -74,6 +87,7 @@ object ManualNodeGraph {
         edges.addAll(loaded.edges)
         lastPlacedId = loaded.lastPlacedId
         nextId = (nodes.keys.maxOrNull() ?: 0) + 1
+        rebuildAdjacency()
     }
 
     @Synchronized
@@ -121,6 +135,7 @@ object ManualNodeGraph {
     fun remove(id: Int): Boolean {
         if (nodes.remove(id) == null) return false
         edges.removeAll { it.from == id || it.to == id }
+        rebuildAdjacency()
         if (lastPlacedId == id) {
             lastPlacedId = nodes.keys.lastOrNull()
         }
@@ -166,6 +181,15 @@ object ManualNodeGraph {
     private fun addEdge(from: Int, to: Int, move: MoveType) {
         if (from == to) return
         if (edges.any { it.from == from && it.to == to }) return
-        edges.add(ManualEdge(from, to, move))
+        val edge = ManualEdge(from, to, move)
+        edges.add(edge)
+        adjacency.getOrPut(from) { ArrayList() }.add(edge)
+    }
+
+    private fun rebuildAdjacency() {
+        adjacency.clear()
+        for (edge in edges) {
+            adjacency.getOrPut(edge.from) { ArrayList() }.add(edge)
+        }
     }
 }

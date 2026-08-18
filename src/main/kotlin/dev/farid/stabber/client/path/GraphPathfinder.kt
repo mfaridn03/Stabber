@@ -19,10 +19,7 @@ object GraphPathfinder {
         val goal = snapshot.nodes[goalId] ?: return null
         if (startId == goalId) return listOf(Step(start, MoveType.WALK))
 
-        val adjacency = HashMap<Int, ArrayList<ManualEdge>>()
-        for (edge in snapshot.edges) {
-            adjacency.getOrPut(edge.from) { ArrayList() }.add(edge)
-        }
+        val adjacency = snapshot.adjacency
 
         val open = PriorityQueue<SearchState>(compareBy { it.f })
         val bestG = HashMap<Int, Double>()

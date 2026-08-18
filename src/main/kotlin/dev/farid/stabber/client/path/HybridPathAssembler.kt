@@ -27,6 +27,9 @@ object HybridPathAssembler {
         val snapshot = ManualNodeGraph.snapshot()
         if (snapshot.nodes.isEmpty()) return PathResult.EMPTY
 
+        directWalk(world, playerPos, goalHint)?.let { return it }
+        if (cancelled?.get() == true) return null
+
         val startCandidates = snapshot.nearestN(playerFeet, HEAD_CANDIDATES)
         if (startCandidates.isEmpty()) return PathResult.EMPTY
 
@@ -55,14 +58,12 @@ object HybridPathAssembler {
         }
         combined.addAll(dropFirstIfSame(tail.raw, combined.lastOrNull()))
 
-        val simplified = PathSimplifier.simplify(combined)
-        return PathResult(
+        return finishWithGoalCut(
+            world,
             combined,
-            simplified,
-            complete = true,
-            goal = goalHint.immutable(),
-            endManualPos = endManual.pos.immutable(),
-            tailStartIndex = tailStartIndex,
+            goalHint,
+            originalEndManual = endManual.pos.immutable(),
+            originalTailStart = tailStartIndex,
         )
     }
 
@@ -83,14 +84,12 @@ object HybridPathAssembler {
         val clamped = tailStartIndex.coerceIn(0, prefixRaw.size)
         val combined = ArrayList<PathNode>(prefixRaw.subList(0, clamped))
         combined.addAll(dropFirstIfSame(tail.raw, combined.lastOrNull()))
-        val simplified = PathSimplifier.simplify(combined)
-        return PathResult(
+        return finishWithGoalCut(
+            world,
             combined,
-            simplified,
-            complete = true,
-            goal = goalHint.immutable(),
-            endManualPos = endManualPos.immutable(),
-            tailStartIndex = clamped,
+            goalHint,
+            originalEndManual = endManualPos.immutable(),
+            originalTailStart = clamped,
         )
     }
 
@@ -104,6 +103,72 @@ object HybridPathAssembler {
         }
         out.addAll(extra)
         return out
+    }
+
+    /**
+     * Goal line-of-sight cut, then string-pull. Updates [PathResult.endManualPos] when the exit
+     * moves to an earlier graph node so cheap tail replans start from that exit.
+     */
+    private fun finishWithGoalCut(
+        world: PathingWorld,
+        combined: List<PathNode>,
+        goalHint: BlockPos,
+        originalEndManual: BlockPos,
+        originalTailStart: Int,
+    ): PathResult {
+        val cut = GoalLineShortcut.cut(world, combined, goalHint)
+        val (endManualPos, tailStart) = resolveTailAnchor(
+            cut,
+            originalEndManual,
+            originalTailStart,
+        )
+        return PathResult.of(
+            world,
+            cut.nodes,
+            complete = true,
+            goal = goalHint.immutable(),
+            endManualPos = endManualPos,
+            tailStartIndex = tailStart,
+        )
+    }
+
+    private fun resolveTailAnchor(
+        cut: GoalLineShortcut.Result,
+        originalEndManual: BlockPos,
+        originalTailStart: Int,
+    ): Pair<BlockPos?, Int> {
+        val exit = cut.exitIndex ?: return originalEndManual to originalTailStart
+        if (exit >= originalTailStart) {
+            return originalEndManual to originalTailStart
+        }
+        val exitPos = cut.nodes[exit].pos
+        if (ManualNodeGraph.nodeAt(exitPos) != null) {
+            return exitPos.immutable() to (exit + 1)
+        }
+        return null to 0
+    }
+
+    /** Skip the graph entirely when the player can already walk straight to the goal. */
+    private fun directWalk(world: PathingWorld, playerPos: BlockPos, goalHint: BlockPos): PathResult? {
+        val start = AStarPathfinder.resolveStanding(world, playerPos) ?: return null
+        val goal = AStarPathfinder.resolveStanding(world, goalHint) ?: return null
+        if (!GoalLineShortcut.canWalk(world, start, goal)) return null
+        val raw = if (start.pos == goal.pos) {
+            listOf(start)
+        } else {
+            listOf(
+                start,
+                PathNode(goal.pos.immutable(), goal.floorY, incoming = MoveType.WALK),
+            )
+        }
+        return PathResult.of(
+            world,
+            raw,
+            complete = true,
+            goal = goalHint.immutable(),
+            endManualPos = null,
+            tailStartIndex = 0,
+        )
     }
 
     private data class HeadWin(val node: ManualNode, val path: List<PathNode>)
