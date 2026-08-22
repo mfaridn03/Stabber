@@ -32,6 +32,10 @@ object PathFollower {
     private const val AIM_HOLD_XZ = 0.5
     /** Degrees per second while path-following: a brisk head turn, not an instant snap. */
     private const val TURN_RATE_DEG_PER_SEC = 180.0
+    /** Degrees per second while acquiring a nearby target: quicker than travel, still human. */
+    private const val TARGET_AIM_RATE_DEG_PER_SEC = 540.0
+    /** Window over which the view slides off the path carrot and onto the target. */
+    private const val TARGET_AIM_BLEND_MS = 400.0
     private const val SPRINT_YAW_TOLERANCE = 20.0f
     /** Blocks of path left; below this the run-up is not worth the loss of turn authority. */
     private const val SPRINT_MIN_REMAINING = 3.0
@@ -50,6 +54,12 @@ object PathFollower {
     private const val STRAFE_ONLY_DEGREES = 67.5
     /** Deadband around those boundaries; without it the keys chatter while sitting on one. */
     private const val STRAFE_HYSTERESIS = 8.0
+
+    /** Low-pass bandwidth for the heading error fed to the strafe quantiser. */
+    private const val HEADING_ERROR_SMOOTHING_PER_SEC = 8.0
+    /** Consecutive ticks the heading must agree on a side before the strafe keys swap sides. */
+    private const val SIDE_FLIP_TICKS = 3
+    private const val TICK_SECONDS = 0.05
 
     /** Offset from the path line beyond which strafing home is fighting terrain, not tracking. */
     private const val OFF_PATH_XZ = 3.0
@@ -84,10 +94,20 @@ object PathFollower {
 
     private var progressIndex = 0
     private var trackedNodes: List<PathNode>? = null
-    private var lastCrossTrack = 0.0
+    private var lastCrossTrack: Double? = null
     private var offPathTicks = 0
     /** Signed strafe bucket carried between ticks so [STRAFE_HYSTERESIS] has something to hold against. */
     private var steerBucket = 0
+
+    /** Low-passed heading error; reseeded whenever the path geometry changes under us. */
+    private var smoothedRelative: Double? = null
+
+    /** Strafe side currently driving the keys; flipping it takes [SIDE_FLIP_TICKS] confirming ticks. */
+    private var appliedSide = 0
+    private var sideStreak = 0
+
+    /** When the current run of target-acquisition frames began, or -1 while tracking the path. */
+    private var targetAimStartedMs = -1L
 
     /**
      * Arms or starts path following.
@@ -173,7 +193,7 @@ object PathFollower {
         val carrot = PathProgress.carrot(nodes, fix, LOOKAHEAD)
 
         val travel = travelDirection(fix, player, carrot)
-        val relative = Mth.degreesDifference(player.yRot, travel).toDouble()
+        val relative = filterRelative(Mth.degreesDifference(player.yRot, travel).toDouble())
         steerBucket = steerBucket(relative, steerBucket)
         val forward = abs(steerBucket) < 2
         val strafeLeft = steerBucket < 0
@@ -216,9 +236,15 @@ object PathFollower {
         val fix = PathProgress.project(nodes, pos.x, pos.y, pos.z, progressIndex, NODE_REACH_XZ)
         if (fix == null) {
             if (target != null && canAttack(player, target)) {
-                RotationController.lookAt(player, target, partialTick = partialTick)
+                RotationController.lookAt(
+                    player,
+                    blendToTarget(null, target, partialTick),
+                    TARGET_AIM_RATE_DEG_PER_SEC,
+                    partialTick,
+                )
                 return
             }
+            targetAimStartedMs = -1L
             val node = nodes.first()
             val centre = StandingPositions.nodeCentre(node.pos, node.floorY)
             if (hypot(pos.x - centre.x, pos.z - centre.z) < AIM_HOLD_XZ) return
@@ -227,9 +253,16 @@ object PathFollower {
         }
 
         if (target != null && onFinalLeg(nodes, fix) && canAttack(player, target)) {
-            RotationController.lookAt(player, target, partialTick = partialTick)
+            val carrot = PathProgress.carrot(nodes, fix, LOOKAHEAD).add(0.0, eyeY, 0.0)
+            RotationController.lookAt(
+                player,
+                blendToTarget(carrot, target, partialTick),
+                TARGET_AIM_RATE_DEG_PER_SEC,
+                partialTick,
+            )
             return
         }
+        targetAimStartedMs = -1L
 
         val remaining = PathProgress.remainingLength(nodes, fix)
         if (remaining < AIM_HOLD_XZ) return
@@ -252,15 +285,37 @@ object PathFollower {
         lockedNode = null
         progressIndex = 0
         trackedNodes = null
-        lastCrossTrack = 0.0
+        lastCrossTrack = null
+        smoothedRelative = null
+        appliedSide = 0
+        sideStreak = 0
         offPathTicks = 0
         offPath = false
         steerBucket = 0
+        targetAimStartedMs = -1L
     }
 
     private fun releaseControls() {
         MovementController.release()
         RotationController.cancel()
+        targetAimStartedMs = -1L
+    }
+
+    /**
+     * Slides the aim point from [from] (the path carrot) onto the target's eyes across
+     * [TARGET_AIM_BLEND_MS], so picking up a nearby target reads as a deliberate glance rather
+     * than an instant snap when the final leg begins.
+     */
+    private fun blendToTarget(from: Vec3?, target: LivingEntity, partialTick: Float): Vec3 {
+        val eyes = target.getEyePosition(partialTick)
+        val started = targetAimStartedMs
+        if (started < 0) {
+            targetAimStartedMs = System.currentTimeMillis()
+            return from ?: eyes
+        }
+        val t = ((System.currentTimeMillis() - started) / TARGET_AIM_BLEND_MS).coerceIn(0.0, 1.0)
+        val eased = t * t * (3.0 - 2.0 * t)
+        return from?.lerp(eyes, eased) ?: eyes
     }
 
     private fun onFinalLeg(nodes: List<PathNode>, fix: PathProgress.Fix): Boolean {
@@ -282,7 +337,10 @@ object PathFollower {
     private fun syncToPath(player: LocalPlayer, nodes: List<PathNode>) {
         if (trackedNodes === nodes) return
         trackedNodes = nodes
-        lastCrossTrack = 0.0
+        lastCrossTrack = null
+        smoothedRelative = null
+        appliedSide = 0
+        sideStreak = 0
         steerBucket = 0
         progressIndex = if (nodes.size < 2) 0 else PathProgress.nearestSegment(nodes, player.x, player.z)
     }
@@ -307,11 +365,13 @@ object PathFollower {
      */
     private fun travelDirection(fix: PathProgress.Fix, player: LocalPlayer, carrot: Vec3): Float {
         if (fix.dirX == 0.0 && fix.dirZ == 0.0) {
-            lastCrossTrack = 0.0
+            lastCrossTrack = fix.crossTrack
             return yawToward(player, carrot)
         }
 
-        val derivative = fix.crossTrack - lastCrossTrack
+        // Null until seeded: treating a fresh measurement as "no previous offset" stops a republish
+        // or reseed from manufacturing a huge derivative and slamming one strafe key for a few ticks.
+        val derivative = fix.crossTrack - (lastCrossTrack ?: fix.crossTrack)
         lastCrossTrack = fix.crossTrack
         val lateral = (-(CROSSTRACK_GAIN * fix.crossTrack + CROSSTRACK_DAMPING * derivative))
             .coerceIn(-MAX_LATERAL, MAX_LATERAL)
@@ -323,12 +383,31 @@ object PathFollower {
     }
 
     /**
+     * Low-passes the heading error so single-tick spikes cannot reach the strafe quantiser: a corner
+     * stepping the segment direction, a republished path, or the cross-track derivative reacting to
+     * its own strafe output all arrive attenuated instead of as full-strength key flips.
+     */
+    private fun filterRelative(raw: Double): Double {
+        val smoothed = smoothedRelative
+        if (smoothed == null) {
+            smoothedRelative = raw
+            return raw
+        }
+        val alpha = 1.0 - Math.exp(-HEADING_ERROR_SMOOTHING_PER_SEC * TICK_SECONDS)
+        val next = smoothed + Mth.degreesDifference(smoothed.toFloat(), raw.toFloat()) * alpha
+        smoothedRelative = next
+        return next
+    }
+
+    /**
      * Signed strafe bucket for a heading [relative] degrees off the player's facing: 0 forward only,
      * ±1 forward plus a strafe, ±2 strafe only. Backward is never pressed — the head is already
      * turning to close the gap, and reversing would trip the stuck detector.
      *
      * Boundaries are widened by [STRAFE_HYSTERESIS] against [previous] so a heading parked on one
-     * does not flip the keys every tick.
+     * does not flip the keys every tick. The side itself is stickier still: swapping A for D takes
+     * [SIDE_FLIP_TICKS] consecutive ticks of disagreement, so an oscillating heading cannot spam
+     * alternating strafe keys while the magnitude hysteresis holds the level steady.
      */
     private fun steerBucket(relative: Double, previous: Int): Int {
         val magnitude = abs(relative)
@@ -345,8 +424,27 @@ object PathFollower {
             }
             else -> if (magnitude < STRAFE_ONLY_DEGREES - STRAFE_HYSTERESIS) 1 else 2
         }
-        if (level == 0) return 0
-        return if (relative >= 0.0) level else -level
+        if (level == 0) {
+            appliedSide = 0
+            sideStreak = 0
+            return 0
+        }
+
+        val rawSide = if (relative >= 0.0) 1 else -1
+        val side = if (appliedSide == 0 || rawSide == appliedSide) {
+            appliedSide = rawSide
+            sideStreak = 0
+            rawSide
+        } else {
+            sideStreak++
+            if (sideStreak < SIDE_FLIP_TICKS) appliedSide
+            else {
+                appliedSide = rawSide
+                sideStreak = 0
+                rawSide
+            }
+        }
+        return side * level
     }
 
     private fun updateOffPath(crossTrack: Double) {

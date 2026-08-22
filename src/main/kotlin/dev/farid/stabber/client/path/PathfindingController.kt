@@ -393,7 +393,6 @@ object PathfindingController {
             TargetManager.select(picked)
             if (!alreadySelected && TargetManager.isTarget(picked)) {
                 minecraft.player?.sendSystemMessage(Component.literal("Target Selected"))
-                startPathfinding(minecraft)
             } else if (alreadySelected) {
                 hadTarget = false
                 stopPathfinding()
