@@ -2,33 +2,15 @@ Some docs
 
 ## Rotation — `client/rotation/RotationController.kt`
 
-Each axis runs a three-stage pipeline: the requested angle feeds an exponentially smoothed
-*reference*, the remaining error commands a *turn speed*, and that speed is approached under an
-*acceleration limit*. On top sits an organic *drift* layer so the gaze never moves robotically.
+Each axis moves toward its requested angle at up to the caller's rate cap per frame and settles
+once within one mouse pixel of it. Deltas are emitted as whole pixels with sub-pixel remainders
+carried across frames, so every applied rotation is an integer multiple of the current
+sensitivity step (GCD-safe) while still flowing through vanilla's own `MouseHandler` turn path.
 
 | Constant | Default | What it controls |
 |---|---|---|
 | `DEFAULT_MAX_STEP` | 1800 deg/s | Ceiling on turn speed when the caller doesn't specify one. `snapTo` bypasses it entirely (`Double.MAX_VALUE`). |
-| `EPSILON` | 0.01 deg | Angle below which an axis counts as arrived. |
-| `SETTLE_SPEED` | 0.5 deg/s | Residual speed below which a settled axis stops nudging. |
-| `REFERENCE_GAIN_PER_SEC` | 30.0 | How fast the smoothed reference chases the requested angle. |
-| `STEERING_GAIN_PER_SEC` | 8.0 | Turn speed commanded per degree of remaining error (deg/s per deg). |
-| `MAX_ACCEL_DEG_PER_SEC_SQ` | 6000.0 | Acceleration limit that rounds off the start/end of every glance. |
-| `DRIFT_YAW_DEG` | 0.45 | Peak yaw wander layered onto requests. |
-| `DRIFT_PITCH_DEG` | 0.30 | Peak pitch wander layered onto requests. |
-| `DRIFT_SLOW_HZ` | 0.35 Hz | Rate of the lazy sway layer. |
-| `DRIFT_FAST_HZ` | 1.30 Hz | Rate of the quicker flick layer. |
-| `DRIFT_FAST_WEIGHT` | 0.5 | Strength of the quick flick relative to the slow sway. |
-
-Tuning guide:
-
-- **Feels too laggy while walking?** Raise `REFERENCE_GAIN_PER_SEC` / `STEERING_GAIN_PER_SEC`.
-- **Overshoots or rings around the target?** Lower `STEERING_GAIN_PER_SEC`, or raise
-  `MAX_ACCEL_DEG_PER_SEC_SQ` if it feels sluggish rather than wobbly.
-- **Starts/stops too abruptly (robotic)?** Lower `MAX_ACCEL_DEG_PER_SEC_SQ` for softer ramps;
-  raising it makes glances snappier but mechanical.
-- **Wobble/jitter near the target or slow final approach?** Raise `EPSILON` (arrive sooner) and/or
-  `SETTLE_SPEED` (stop micro-nudging earlier).
+| `EPSILON` | 0.01 deg | Floor on the settle tolerance when one mouse pixel is finer than this. |
 - **Looks drunk / wanders too much while aiming?** Lower `DRIFT_YAW_DEG` / `DRIFT_PITCH_DEG`.
 - **Drift imperceptible or too obvious in recordings?** Scale both drift amplitudes together; tweak
   `DRIFT_SLOW_HZ` / `DRIFT_FAST_HZ` only if the sway rhythm itself looks wrong.
@@ -111,9 +93,9 @@ knockbacks feels slow.
 ## Fighting — `combat/`
 
 Select a target like for pathfinding (middle mouse on the crosshair pick), then `/fight`. The bot
-walks at the target holding W and releases inside melee distance, rests the cursor on the
-opponent instead of tracking them (gliding back toward their centre only when strafing pushes the
-hitbox toward the edge of view), and clicks at a wandering 8–12 CPS delivered through vanilla's own
+walks at the target holding W and releases inside melee distance, locks the crosshair onto the
+target's hitbox centre every render frame (partial-tick interpolated, delivered on the GCD grid),
+and clicks at a wandering 8–12 CPS delivered through vanilla's own
 attack-key path (`KeyMapping.click`, so cooldowns, miss swings and knockback behave exactly like
 real presses). Mutually exclusive with pathfinding — whichever starts second stops the other.
 
@@ -138,46 +120,10 @@ Tuning guide:
 
 ### Aim — `CombatAim.kt`
 
-The cursor's offset from the hitbox centre is measured in *apparent radii* — degrees off centre
-divided by `atan(halfDiagonal / distance)` — so one hysteresis band works at every range. Pitch
-hugs zero whenever a level ray already passes through the hitbox (which also keeps the full
-interaction range); only boxes entirely above or below the horizon pull pitch off zero.
-
-| Constant | Default | What it controls |
-|---|---|---|
-| `PITCH_LIMIT_DEG` | 30° | Saturation clamp for pitch; targets higher/lower than this stop pulling the view further down/up. |
-| `PITCH_DEADBAND_DEG` | 6° | Required pitch corrections within this band of level are treated as exactly level. |
-| `PITCH_REACQUIRE_DEG` | 0.6° | A settled pitch is left alone until the error grows past this. |
-| `PITCH_ONLY_RATE_DEG_PER_SEC` | 120 | Turn speed cap while correcting pitch alone. |
-| `HOVER_ENTER` | 0.55 | Offset below which the cursor counts as resting centred (no rotation issued). |
-| `HOVER_EXIT` | 0.80 | Offset past which — near the apparent edge — a glide back to centre fires. |
-| `REACQUIRE_RATIO` | 1.5 | Offset beyond which the correction becomes a fast reacquire glance. |
-| `RECENTER_MIN_RATE_DEG_PER_SEC` / `_MAX_` | 260–400 | Glide speed rolled once per correction event. |
-| `REACQUIRE_RATE_DEG_PER_SEC` | 540 | Speed when the cursor lost the target entirely. |
-| `OVERSHOOT_MAX_FRACTION` | 0.15 | Glides may carry past centre by up to this fraction of the apparent radius, rolled per event. |
-| `MIN_APPARENT_RADIUS_DEG` | 1.5° | Floor on the apparent radius so distant targets cannot make ratios explode. |
-| `MIN_AIM_DISTANCE_XZ` | 1.0 | Below this horizontal distance bearings are meaningless; hold the view. |
-| `NUDGE_MIN_INTERVAL_S` / `_MAX_` | 0.6–1.4 s | Cadence of hover nudges outside of bursts. |
-| `NUDGE_BURST_CHANCE` | 0.30 | Chance a nudge is followed by a quick second one (flick-and-correct). |
-| `NUDGE_BURST_MIN_GAP_S` / `_MAX_` | 0.12–0.26 s | Gap between the two nudges of a burst. |
-| `NUDGE_MIN_FRACTION` / `_MAX_` | 0.06–0.16 | Nudge peak as a fraction of the hitbox's apparent radius. |
-| `NUDGE_MAX_YAW_DEG` | 2.5° | Absolute yaw safety cap; only bites on small/distant targets. |
-| `NUDGE_PITCH_RATIO` | 0.85 | Pitch nudge size relative to the rolled yaw nudge size. |
-| `NUDGE_RATE_DEG_PER_SEC` | 14 | Turn speed cap while playing a nudge out. |
-
-Tuning guide:
-
-- **Tracks the target too much (cursor never rests)?** Widen the gap by lowering `HOVER_ENTER`
-  and/or raising `HOVER_EXIT`.
-- **Eats hits because recentres are too slow?** Raise both `RECENTER_*` rates, or lower `HOVER_EXIT`
-  so glides fire earlier.
-- **Looks robotic when strafe-crossing?** Raise `ADJUST_OFFSET_MAX_FRACTION` and widen the rate band.
-- **Aim sits visibly above/below heads?** Lower `PITCH_DEADBAND_DEG` (or raise it if the pitch
-  micro-adjustments bother you).
-- **Micro-stutters too visible in recordings?** Lower `NUDGE_MAX_FRACTION` / `NUDGE_MAX_YAW_DEG`
-  or stretch the nudge interval band.
-- **Hover nudges imperceptible?** Raise `NUDGE_MAX_FRACTION` toward 0.08 or slow
-  `NUDGE_RATE_DEG_PER_SEC` so each glide reads longer.
+Pure lock-on: every render frame the aim point is the target's bounding box slid onto its
+partial-tick interpolated position, and the view is driven to that point at full speed through the
+GCD-safe delivery in `RotationController`. The crosshair therefore tracks what is actually drawn,
+resting within one mouse pixel of the hitbox centre.
 
 ### Clicks — `HumanClicker.kt`
 

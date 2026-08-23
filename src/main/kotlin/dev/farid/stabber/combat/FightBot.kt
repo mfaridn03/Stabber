@@ -175,7 +175,6 @@ object FightBot {
         clicker.reset(System.nanoTime())
         MovementController.release()
         RotationController.cancel()
-        CombatAim.reset()
     }
 
     private fun gaussian(): Double {
