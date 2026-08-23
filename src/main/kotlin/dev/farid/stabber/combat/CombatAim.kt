@@ -27,7 +27,9 @@ import kotlin.random.Random
  * target's centre that slowly wanders via per-axis drift noise, instead of pinning dead centre.
  * Corrections run in two phases — a ballistic flick that eases out onto an apex placed slightly
  * past the target and then settles back, switching to a soft lagged tracking filter once close,
- * and back to a fresh flick if the target escapes. While the view
+ * and back to a fresh flick if the target escapes. Moving targets are only partially led: the
+ * aim point shifts ahead by a noisy fraction of their motion, so tracking stays slightly
+ * trailing. While the view
  * error sits inside a sampled deadzone no corrections are issued at all; the deadzone tightens
  * for a short window after each synthetic click so swings still land on target.
  */
@@ -114,6 +116,21 @@ object CombatAim {
     /** Ceiling for the wandering tracking bandwidth, per second. */
     const val TRACK_BANDWIDTH_MAX_PER_S: Double = 20.0
 
+    /** Lower bound of the sampled fraction of target motion the aim leads by. */
+    const val PREDICT_LEAD_MIN_FRACTION: Double = 0.3
+
+    /** Upper bound of the sampled lead fraction; tracking never fully compensates. */
+    const val PREDICT_LEAD_MAX_FRACTION: Double = 0.7
+
+    /** Motion horizon the lead fraction applies over, seconds. */
+    const val PREDICT_HORIZON_SECONDS: Double = 0.25
+
+    /** Smoothing rate of the observed target velocity estimate, per second. */
+    const val PREDICT_VELOCITY_SMOOTH_PER_S: Double = 6.0
+
+    /** Peak wander of the lead strength, as a fraction of the sampled lead. */
+    const val PREDICT_LEAD_WOBBLE: Double = 0.15
+
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
@@ -188,6 +205,20 @@ object CombatAim {
     /** Wanderer modulating the tracking bandwidth so pursuit tightens and loosens organically. */
     private var trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
 
+    /** Per-acquisition fraction of target motion the aim point leads by. */
+    private var leadFraction = (PREDICT_LEAD_MIN_FRACTION + PREDICT_LEAD_MAX_FRACTION) / 2.0
+
+    /** Wanderer breathing life into the lead strength so it is never a constant multiplier. */
+    private var leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE)
+
+    /** Interpolated target position of the previous frame; NaN forces a fresh estimate. */
+    private var prevInterpX = Double.NaN
+    private var prevInterpZ = Double.NaN
+
+    /** Smoothed horizontal target velocity estimate, blocks per second. */
+    private var smoothedVelX = 0.0
+    private var smoothedVelZ = 0.0
+
     fun update(minecraft: Minecraft, partialTick: Float) {
         val player = minecraft.player ?: return
         val level = minecraft.level ?: return
@@ -208,6 +239,12 @@ object CombatAim {
             deadzoneYawScale = uniform(DEADZONE_YAW_SCALE_MIN, DEADZONE_YAW_SCALE_MAX)
             sampleAimOffset(target)
             trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
+            leadFraction = uniform(PREDICT_LEAD_MIN_FRACTION, PREDICT_LEAD_MAX_FRACTION)
+            leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE)
+            // A new target is a new motion model; drop the stale velocity estimate.
+            prevInterpX = Double.NaN
+            smoothedVelX = 0.0
+            smoothedVelZ = 0.0
             armFlick()
             lastAimNanos = 0L
         }
@@ -229,6 +266,10 @@ object CombatAim {
         partialTick: Float,
         nowNanos: Long,
     ) {
+        // Frame duration for every per-second integration below; clamped so hitches never jump.
+        var dtSeconds = if (lastAimNanos == 0L) 1.0 / 60.0 else (nowNanos - lastAimNanos) / 1.0e9
+        dtSeconds = dtSeconds.coerceIn(0.001, 0.25)
+        lastAimNanos = nowNanos
 
         val eye = player.getEyePosition(partialTick)
         // boundingBox only updates once per tick; slide it onto the render-frame interpolated
@@ -237,6 +278,18 @@ object CombatAim {
         var centre: Vec3 = target.boundingBox
             .move(interp.x - target.x, interp.y - target.y, interp.z - target.z)
             .center
+
+        // Estimate horizontal target velocity by smoothing observed frame-to-frame motion.
+        // Vertical motion is ignored so jumps and falls do not yank the aim point around.
+        if (!prevInterpX.isNaN()) {
+            val observedVx = (interp.x - prevInterpX) / dtSeconds
+            val observedVz = (interp.z - prevInterpZ) / dtSeconds
+            val blend = 1.0 - exp(-PREDICT_VELOCITY_SMOOTH_PER_S * dtSeconds)
+            smoothedVelX += (observedVx - smoothedVelX) * blend
+            smoothedVelZ += (observedVz - smoothedVelZ) * blend
+        }
+        prevInterpX = interp.x
+        prevInterpZ = interp.z
 
         // Gaussian-weighted aim point that slowly wanders instead of pinning dead centre.
         val bb = target.boundingBox
@@ -252,6 +305,13 @@ object CombatAim {
                 else -> centre.add(0.0, 0.0, offset)
             }
         }
+
+        // Partial lead: aim ahead of the target's motion by a sampled fraction of a short
+        // horizon — never full compensation, and the fraction itself wobbles over time so the
+        // net bias stays slightly trailing (paired with the lagged tracking filter).
+        val leadScale = leadFraction * (1.0 + leadWobbleDrift.at(elapsedSeconds)) *
+            PREDICT_HORIZON_SECONDS
+        centre = centre.add(smoothedVelX * leadScale, 0.0, smoothedVelZ * leadScale)
 
         val dx = centre.x - eye.x
         val dy = centre.y - eye.y
@@ -279,10 +339,6 @@ object CombatAim {
         // Two-phase correction: a ballistic flick eases out onto an apex placed slightly past
         // the target, hands over to lagged tracking when the mark is crossed, and re-flicks if
         // the target escapes the tracking band.
-        var dtSeconds = if (lastAimNanos == 0L) 1.0 / 60.0 else (nowNanos - lastAimNanos) / 1.0e9
-        dtSeconds = dtSeconds.coerceIn(0.001, 0.25)
-        lastAimNanos = nowNanos
-
         val distance = sqrt(yawError * yawError + pitchError * pitchError)
         if (phase == Phase.FLICK) {
             if (flickNeedsSetup) {
