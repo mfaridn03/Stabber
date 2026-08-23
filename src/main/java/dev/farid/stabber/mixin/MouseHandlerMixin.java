@@ -2,6 +2,7 @@ package dev.farid.stabber.mixin;
 
 import dev.farid.stabber.client.movement.PathFollower;
 import dev.farid.stabber.client.rotation.RotationController;
+import dev.farid.stabber.combat.FightBot;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
 import net.minecraft.client.player.LocalPlayer;
@@ -47,6 +48,7 @@ public class MouseHandlerMixin {
 
         float partialTick = this.minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         PathFollower.INSTANCE.updateAim(this.minecraft, partialTick);
+        FightBot.INSTANCE.updateAim(this.minecraft, partialTick);
 
         if (!RotationController.INSTANCE.isRotating()) {
             return;
