@@ -7,6 +7,7 @@ import dev.farid.stabber.client.path.PathfindingController
 import dev.farid.stabber.client.render.ManualNodeRenderer
 import dev.farid.stabber.client.render.PathGizmoRenderer
 import dev.farid.stabber.client.target.TargetManager
+import dev.farid.stabber.combat.FightBot
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
@@ -22,6 +23,7 @@ class StabberClient : ClientModInitializer {
             NodeEditController.tick(client)
             PathfindingController.tick(client)
             PathFollower.tick(client)
+            FightBot.tick(client)
         }
         LevelRenderEvents.BEFORE_GIZMOS.register {
             val levelRenderer = Minecraft.getInstance().levelRenderer
@@ -37,6 +39,7 @@ class StabberClient : ClientModInitializer {
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             PathfindingController.onDisconnect()
             PathFollower.stop()
+            FightBot.stop()
         }
     }
 }

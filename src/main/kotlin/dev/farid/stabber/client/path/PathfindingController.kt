@@ -157,6 +157,11 @@ object PathfindingController {
         stopAutoPathfind()
     }
 
+    /** Deactivates pathfinding from the outside (e.g. another module taking over the controls). */
+    fun stop() {
+        stopPathfinding()
+    }
+
     private fun tryAcquire(minecraft: Minecraft, notifyFailure: Boolean): Boolean {
         val level = minecraft.level
         val player = minecraft.player

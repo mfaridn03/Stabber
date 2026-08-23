@@ -5,6 +5,7 @@ import dev.farid.stabber.client.movement.PathFollower
 import dev.farid.stabber.client.path.NodeEditController
 import dev.farid.stabber.client.path.PathfindingController
 import dev.farid.stabber.client.path.PathfindingRegion
+import dev.farid.stabber.combat.FightBot
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands
 import net.minecraft.network.chat.Component
@@ -15,6 +16,9 @@ object StabberCommands {
             dispatcher.register(
                 ClientCommands.literal("pathfind").executes { context ->
                     val enabled = PathfindingController.togglePathfind(context.source.client)
+                    if (enabled) {
+                        FightBot.stop()
+                    }
                     val msg = if (enabled) "Pathfinding enabled" else "Pathfinding disabled"
                     context.source.sendFeedback(Component.literal(msg))
                     Command.SINGLE_SUCCESS
@@ -31,6 +35,17 @@ object StabberCommands {
             dispatcher.register(
                 ClientCommands.literal("start").executes {
                     PathFollower.requestStart()
+                    if (PathFollower.following || PathFollower.pendingStart) {
+                        FightBot.stop()
+                    }
+                    Command.SINGLE_SUCCESS
+                },
+            )
+            dispatcher.register(
+                ClientCommands.literal("fight").executes { context ->
+                    val enabled = FightBot.toggle(context.source.client)
+                    val msg = if (enabled) "Fight enabled" else "Fight disabled"
+                    context.source.sendFeedback(Component.literal(msg))
                     Command.SINGLE_SUCCESS
                 },
             )
