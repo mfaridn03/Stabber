@@ -11,9 +11,6 @@ sensitivity step (GCD-safe) while still flowing through vanilla's own `MouseHand
 |---|---|---|
 | `DEFAULT_MAX_STEP` | 1800 deg/s | Ceiling on turn speed when the caller doesn't specify one. `snapTo` bypasses it entirely (`Double.MAX_VALUE`). |
 | `EPSILON` | 0.01 deg | Floor on the settle tolerance when one mouse pixel is finer than this. |
-- **Looks drunk / wanders too much while aiming?** Lower `DRIFT_YAW_DEG` / `DRIFT_PITCH_DEG`.
-- **Drift imperceptible or too obvious in recordings?** Scale both drift amplitudes together; tweak
-  `DRIFT_SLOW_HZ` / `DRIFT_FAST_HZ` only if the sway rhythm itself looks wrong.
 
 ## Path following — `client/movement/PathFollower.kt`
 
@@ -46,7 +43,7 @@ Tuning guide:
 - **Corners cut too tight / clips walls?** Lower `LOOKAHEAD`; raise it if the head lags behind corners.
 - **Weaves side-to-side along straights?** Lower `CROSSTRACK_GAIN` or raise `CROSSTRACK_DAMPING`.
 - **Slow to correct drift back onto the line?** Raise `CROSSTRACK_GAIN` (keep `MAX_LATERAL` sane).
-- **Strafe keys stutter near `STRAFE_ENTER_DEGREES`?** Raise `STRAFE_HYSTERESIS`.
+- **Strafe keys stutter near boundaries?** Raise `STRAFE_HYSTERESIS`.
 - **Turns look robotic mid-path?** Lower `TURN_RATE_DEG_PER_SEC`; raise if it misses the carrot.
 - **Declares failure too eagerly after a knockback?** Raise `OFF_PATH_TICKS` / `OFF_PATH_XZ`.
 
@@ -56,8 +53,10 @@ Tuning guide:
 |---|---|---|
 | `MAX_EXPANSIONS` | 2000 | Node expansions before giving up — hard runtime cap. |
 | `MAX_RADIUS` | 64 | Search radius from start, in blocks. |
-| `MAX_GAP` | 2.5 | Widest horizontal gap a jump/drop link may span. |
-| `JUMP_EPSILON` | 0.05 | Height tolerance when validating jump links. |
+| `MAX_GAP` | 2.5 | Widest horizontal gap a jump link may span. |
+| `JUMP_EPSILON` | 0.05 | Flat cost surcharge applied to every jump link, so walking wins ties. |
+| `MAX_DROP_SCAN` | 64 | How far straight down a drop link may fall while searching for landing. |
+| `SWEEPS_PER_NODE` | 80 | Cap on candidate cells examined per expansion — bounds worst-case frame time. |
 | `GAP_COST_PER_BLOCK` | 0.25 | Extra cost per block of gap, so jumps are avoided unless shorter. |
 | `VERTICAL_COST_WEIGHT` | 1.05 | Slight bias against climbing routes. |
 | `GOAL_SEARCH_RADIUS` | 2 | Blocks around the goal hint scanned for a standable goal cell. |
@@ -94,10 +93,10 @@ knockbacks feels slow.
 
 Select a target like for pathfinding (middle mouse on the crosshair pick), then `/fight`. The bot
 walks at the target holding W and releases inside melee distance, locks the crosshair onto the
-target's hitbox centre every render frame (partial-tick interpolated, delivered on the GCD grid),
-and clicks at a wandering 8–12 CPS delivered through vanilla's own
-attack-key path (`KeyMapping.click`, so cooldowns, miss swings and knockback behave exactly like
-real presses). Mutually exclusive with pathfinding — whichever starts second stops the other.
+target through a humanised aim model (see below), and clicks at a wandering 8–12 CPS delivered
+through vanilla's own attack-key path (`KeyMapping.click`, so cooldowns, miss swings and knockback
+behave exactly like real presses). Mutually exclusive with pathfinding — whichever starts second
+stops the other.
 
 ### Approach — `FightBot.kt`
 
@@ -120,10 +119,85 @@ Tuning guide:
 
 ### Aim — `CombatAim.kt`
 
-Pure lock-on: every render frame the aim point is the target's bounding box slid onto its
-partial-tick interpolated position, and the view is driven to that point at full speed through the
-GCD-safe delivery in `RotationController`. The crosshair therefore tracks what is actually drawn,
-resting within one mouse pixel of the hitbox centre.
+Not a lock-on: aiming reads as a person. After each acquisition nothing tracks until a sampled
+reaction delay elapses. The aim point is a gaussian-weighted offset inside the hitbox that slowly
+wanders, hanging a sampled drop below the shooter's own eye line so elevation differences get
+absorbed by hitting higher or lower on the body instead of pitching. Corrections run in two
+phases — a ballistic flick that eases out onto an apex placed slightly past the target, then a
+soft lagged tracking filter once close, re-flicking if the target escapes. Moving targets are only
+partially led (the lead fraction wobbles), hand tremor rides on top as sub-degree noise, and while
+the view error sits inside a sampled deadzone no corrections are issued at all. Most bounds are
+sampled once per acquisition, so no two fights share the same constants.
+
+Reaction, deadzones and attack window:
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `REACTION_MIN_MS` / `_MAX_` | 120–250 ms | Sampled delay after acquiring a target before any tracking starts. |
+| `HOLD_DEADZONE_MIN_DEG` / `_MAX_` | 0.8–1.5° | Sampled idle tolerance band; errors inside it trigger no corrections. |
+| `ATTACK_DEADZONE_MIN_DEG` / `_MAX_` | 0.35–0.65° | Sampled tightened band active right after a synthetic click. |
+| `ATTACK_WINDOW_MS` | 350 ms | How long after a click the tighter deadzone stays active. |
+| `DEADZONE_YAW_SCALE_MIN` / `_MAX_` | ×1.15–1.45 | Sampled widening of the deadzone along yaw — horizontal misses bother humans less. |
+| `YAW_BIAS_MIN` / `_MAX_` | ×1.35–1.75 | Sampled speed multiplier of yaw over pitch; horizontal sweeps are faster. |
+
+Flick phase:
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `FLICK_SPEED_MIN_DEG_PER_S` / `_MAX_` | 240–520 deg/s | Sampled ceiling for the current flick. |
+| `FLICK_GAIN_PER_S` | 14.0 | Proportional gain turning remaining angle into the flick cap (ease-out decay). |
+| `FLICK_MIN_STEP_DEG_PER_S` | 40.0 | Floor for the proportional cap so distant starts still move briskly. |
+| `OVERSHOOT_MIN_FRACTION` / `_MAX_` | 4–10% | Sampled overshoot past the mark, as a fraction of the flick's initial angle. |
+| `OVERSHOOT_MAX_DEG` | 6.0° | Hard ceiling on overshoot regardless of flick size. |
+| `OVERSHOOT_MIN_DISTANCE_DEG` | 20° | Flicks shorter than this go straight at the mark, no apex. |
+| `FITTS_REF_ID` | 4.0 | Reference index of difficulty at which the sampled flick ceiling applies at full speed; larger angles-onto-small-targets pace slower (Fitts' law). |
+
+Tracking phase:
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `TRACK_ENTER_DEG` | 8° | Angular distance where a flick hands over to tracking. |
+| `TRACK_EXIT_DEG` | 18° | Angular distance above which tracking gives up and re-flicks. |
+| `TRACK_BANDWIDTH_PER_S` | 12.0 | First-order tracking bandwidth; higher follows more tightly. |
+| `TRACK_BANDWIDTH_WANDER` | ±25% | Peak wander of the bandwidth so pursuit tightens and loosens organically. |
+| `TRACK_BANDWIDTH_MIN_PER_S` / `_MAX_` | 8–20 /s | Bounds on the wandering bandwidth. |
+| `TRACK_MAX_STEP_DEG_PER_S` | 120.0 | Hard cap on tracking-phase rotation speed. |
+
+Prediction (partial target lead):
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `PREDICT_LEAD_MIN_FRACTION` / `_MAX_` | 0.3–0.7 | Sampled fraction of target motion the aim leads by — never full compensation. |
+| `PREDICT_HORIZON_SECONDS` | 0.25 s | Motion horizon the lead fraction applies over. |
+| `PREDICT_VELOCITY_SMOOTH_PER_S` | 6.0 | Smoothing rate of the observed target velocity estimate. |
+| `PREDICT_LEAD_WOBBLE` | ±15% | Wander of the lead strength so the net bias stays slightly trailing. |
+
+Tremor and aim-point placement:
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `TREMOR_MIN_DEG` / `_MAX_` | 0.08–0.30° | Sampled per-axis hand-tremor amplitude riding on the tracked aim. |
+| `TREMOR_BASE_FREQ_HZ` | 4.0 | Base frequency of tremor waves; components detune into the 3–15 Hz band. |
+| `TREMOR_ATTACK_SCALE` | ×0.5 | Tremor scale while attacking — squeezing off a click steadies the hand. |
+| `AIM_SIGMA_OF_HALF_EXTENT` | 0.35 | Sigma of the gaussian anchor offset, as a fraction of hitbox half-extent per axis. |
+| `AIM_DROP_MIN_BLOCKS` / `_MAX_` | 0.25–0.45 | Sampled drop of the preferred aim height below the shooter's own eyes. |
+| `CLAMP_KNEE_MIN_BLOCKS` / `_MAX_` | 0.10–0.22 | Sampled soft-knee size of the vertical clamp — deep overshoots settle near-but-not-at the wall. |
+| `CLAMP_BREATH_BLOCKS` | 0.06 | Peak slow wobble of the vertical clamp bounds so it never sits machined-exact. |
+| `AIM_EDGE_MARGIN_BLOCKS` | 0.05 | Margin kept from the hitbox edge for any combined aim offset. |
+| `DRIFT_AMPLITUDE_BLOCKS` | 0.06 | Peak total wander amplitude of the drifting horizontal offset. |
+| `DRIFT_FREQUENCY_HZ` | 0.35 | Base temporal frequency of the drift wander. |
+
+Tuning guide:
+
+- **Flicks look robotic / too fast?** Narrow the `FLICK_SPEED_*` band downward; raise `FITTS_REF_ID`
+  only if long-range flicks feel artificially slowed.
+- **Sits visibly off-centre in replays?** Shrink `AIM_SIGMA_OF_HALF_EXTENT` and `DRIFT_AMPLITUDE_BLOCKS`;
+  raise them if the anchor looks pinned.
+- **Jittery micro-corrections near the target?** Widen the `HOLD_DEADZONE_*` band or `DEADZONE_YAW_SCALE_*`.
+- **Keeps missing elevated targets?** Adjust `AIM_DROP_*` — the point hangs below your own eye line.
+- **Loses fast-strafing targets?** Raise `PREDICT_LEAD_*` fractions and `TRACK_BANDWIDTH_PER_S`.
+- **Reaction pause too theatrical or absent?** Move the `REACTION_*` window.
+- **Hands shake too much on camera?** Lower `TREMOR_MIN_DEG`/`_MAX_`.
 
 ### Clicks — `HumanClicker.kt`
 
@@ -166,6 +240,10 @@ Some constants are not tuning knobs and shouldn't move casually:
 
 - `StandingPositions.PLAYER_WIDTH/HEIGHT`, `STEP_HEIGHT`, `JUMP_HEIGHT` — mirror vanilla player
   collision and movement physics; the pathfinder's world model depends on them being exact.
+  `THIN_FLOOR_MAX` (floors thinner than half a block count as their own surface) and `SWEEP_STEP`
+  (clearance-sweep resolution) sit close behind them.
 - `PathfindingRegion.MIN_X..MAX_Y` — the hard region bounds the whole system operates inside.
+- `RotationController.EPSILON`, `PathFollower.TICK_SECONDS` — tied to mouse-pixel granularity and
+  the vanilla tick respectively.
 - Renderer values (`PathGizmoRenderer`, `ManualNodeRenderer`) — pure visuals: line width, node box
   size, lift above ground, and ARGB colours. Safe to taste.
