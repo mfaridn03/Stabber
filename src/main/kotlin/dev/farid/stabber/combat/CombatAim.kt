@@ -24,9 +24,9 @@ import kotlin.random.Random
  * A freshly acquired target is not tracked immediately: aiming starts only after a per-acquisition
  * sampled human reaction delay. The aim point itself is a gaussian-weighted offset from the
  * target's centre that slowly wanders via per-axis drift noise, instead of pinning dead centre.
- * Corrections run in two phases — a ballistic flick whose
- * per-frame speed cap scales down with remaining angle (ease-out), switching to a soft lagged
- * tracking filter once close, and back to a fresh flick if the target escapes. While the view
+ * Corrections run in two phases — a ballistic flick that eases out onto an apex placed slightly
+ * past the target and then settles back, switching to a soft lagged tracking filter once close,
+ * and back to a fresh flick if the target escapes. While the view
  * error sits inside a sampled deadzone no corrections are issued at all; the deadzone tightens
  * for a short window after each synthetic click so swings still land on target.
  */
@@ -89,6 +89,18 @@ object CombatAim {
     /** Upper bound of the sampled deadzone widening along yaw. */
     const val DEADZONE_YAW_SCALE_MAX: Double = 1.45
 
+    /** Lower bound of the overshoot, as a fraction of the flick's initial angular distance. */
+    const val OVERSHOOT_MIN_FRACTION: Double = 0.04
+
+    /** Upper bound of the overshoot fraction; real flicks pass their mark by a few degrees. */
+    const val OVERSHOOT_MAX_FRACTION: Double = 0.10
+
+    /** Hard ceiling on overshoot regardless of flick size, degrees. */
+    const val OVERSHOOT_MAX_DEG: Double = 6.0
+
+    /** Flicks shorter than this skip the overshoot entirely, degrees. */
+    const val OVERSHOOT_MIN_DISTANCE_DEG: Double = 20.0
+
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
@@ -134,6 +146,19 @@ object CombatAim {
     private var flickSpeedDegPerSec =
         (FLICK_SPEED_MIN_DEG_PER_S + FLICK_SPEED_MAX_DEG_PER_S) / 2.0
 
+    /** Set when a flick is armed and still needs its overshoot sampled from live angles. */
+    private var flickNeedsSetup = true
+
+    /** Angular distance the current flick aims past the target by, degrees. */
+    private var overshootDeg = 0.0
+
+    /** Unit approach direction of the current flick, used to place the apex past the target. */
+    private var overshootDirYaw = 0.0f
+    private var overshootDirPitch = 0.0f
+
+    /** Apex distance of the previous frame; growth means the view passed the mark. */
+    private var prevApexDistance = Double.NaN
+
     /** Lagged reference angles the tracking filter chases instead of the live ideal. */
     private var trackYaw = 0.0f
     private var trackPitch = 0.0f
@@ -166,7 +191,7 @@ object CombatAim {
             yawSpeedBias = uniform(YAW_BIAS_MIN, YAW_BIAS_MAX)
             deadzoneYawScale = uniform(DEADZONE_YAW_SCALE_MIN, DEADZONE_YAW_SCALE_MAX)
             sampleAimOffset(target)
-            enterFlick()
+            armFlick()
             lastAimNanos = 0L
         }
         if (nowNanos - acquiredNanos < reactionDelayNanos) return
@@ -220,54 +245,107 @@ object CombatAim {
         // Lazy hold: while the view sits inside the tolerance band no corrections are issued at
         // all. Right after a click the band tightens so swings land on target, then widens again.
         // The yaw zone runs wider — horizontal misses bother a human less than vertical ones.
+        // Mid-flick the hold deadzone is suspended so a flick is never cancelled while sweeping
+        // through its own aim point; attack precision still applies.
         val yawError = abs(Mth.wrapDegrees(yaw - player.yRot).toDouble())
         val pitchError = abs((pitch - player.xRot).toDouble())
         val attacking = AttackController.recentlyAttacked(nowNanos, ATTACK_WINDOW_MS)
-        val deadzone = if (attacking) attackDeadzoneDeg else holdDeadzoneDeg
-        if (yawError <= deadzone * deadzoneYawScale && pitchError <= deadzone) {
-            RotationController.cancel()
-            return
+        if (phase == Phase.TRACK || attacking) {
+            val zoneWidth =
+                (if (attacking) attackDeadzoneDeg else holdDeadzoneDeg)
+            if (yawError <= zoneWidth * deadzoneYawScale && pitchError <= zoneWidth) {
+                RotationController.cancel()
+                return
+            }
         }
 
-        // Two-phase correction: a flick eases out onto the target with an angle-proportional
-        // speed cap, hands over to lagged tracking when close, and re-flicks if the target
-        // escapes the tracking band.
+        // Two-phase correction: a ballistic flick eases out onto an apex placed slightly past
+        // the target, hands over to lagged tracking when the mark is crossed, and re-flicks if
+        // the target escapes the tracking band.
         var dtSeconds = if (lastAimNanos == 0L) 1.0 / 60.0 else (nowNanos - lastAimNanos) / 1.0e9
         dtSeconds = dtSeconds.coerceIn(0.001, 0.25)
         lastAimNanos = nowNanos
 
         val distance = sqrt(yawError * yawError + pitchError * pitchError)
-        if (phase == Phase.FLICK && distance <= TRACK_ENTER_DEG) {
-            // Start the filter from where the view actually is so the handover never jumps.
-            phase = Phase.TRACK
-            trackYaw = player.yRot
-            trackPitch = player.xRot
-        } else if (phase == Phase.TRACK && distance > TRACK_EXIT_DEG) {
-            enterFlick()
+        if (phase == Phase.FLICK) {
+            if (flickNeedsSetup) {
+                setupFlick(player.yRot, player.xRot, yaw, pitch, attacking)
+            }
+
+            // The flick aims at an apex offset past the ideal point along the approach direction.
+            val apexYaw = Mth.wrapDegrees(yaw + overshootDirYaw * overshootDeg.toFloat())
+            val apexPitch =
+                Mth.clamp(pitch + overshootDirPitch * overshootDeg.toFloat(), -90.0f, 90.0f)
+            val apexYawError = abs(Mth.wrapDegrees(apexYaw - player.yRot).toDouble())
+            val apexPitchError = abs((apexPitch - player.xRot).toDouble())
+            val apexDistance = sqrt(apexYawError * apexYawError + apexPitchError * apexPitchError)
+
+            // Once the view stops closing on the apex it has crossed the mark: settle back.
+            val crossedApex = !prevApexDistance.isNaN() && apexDistance >= prevApexDistance
+            prevApexDistance = apexDistance
+
+            if (!crossedApex && apexDistance > TRACK_ENTER_DEG) {
+                val stepCap = (apexDistance * FLICK_GAIN_PER_S)
+                    .coerceIn(FLICK_MIN_STEP_DEG_PER_S, flickSpeedDegPerSec)
+                RotationController.rotateTo(apexYaw, apexPitch, stepCap * yawSpeedBias, stepCap)
+                return
+            }
+            enterTrack(player.yRot, player.xRot)
+        } else if (distance > TRACK_EXIT_DEG) {
+            armFlick()
         }
 
-        if (phase == Phase.FLICK) {
-            val stepCap = (distance * FLICK_GAIN_PER_S)
-                .coerceIn(FLICK_MIN_STEP_DEG_PER_S, flickSpeedDegPerSec)
-            RotationController.rotateTo(yaw, pitch, stepCap * yawSpeedBias, stepCap)
-        } else {
-            val alpha = (1.0 - exp(-TRACK_BANDWIDTH_PER_S * dtSeconds)).toFloat()
-            trackYaw += Mth.wrapDegrees(yaw - trackYaw) * alpha
-            trackPitch += (pitch - trackPitch) * alpha
-            RotationController.rotateTo(
-                trackYaw,
-                trackPitch,
-                TRACK_MAX_STEP_DEG_PER_S * yawSpeedBias,
-                TRACK_MAX_STEP_DEG_PER_S,
-            )
-        }
+        // Lagged tracking filter — also serves as the settle-back after an overshoot.
+        val alpha = (1.0 - exp(-TRACK_BANDWIDTH_PER_S * dtSeconds)).toFloat()
+        trackYaw += Mth.wrapDegrees(yaw - trackYaw) * alpha
+        trackPitch += (pitch - trackPitch) * alpha
+        RotationController.rotateTo(
+            trackYaw,
+            trackPitch,
+            TRACK_MAX_STEP_DEG_PER_S * yawSpeedBias,
+            TRACK_MAX_STEP_DEG_PER_S,
+        )
     }
 
     /** Arms a fresh ballistic approach with a newly sampled flick speed. */
-    private fun enterFlick() {
+    private fun armFlick() {
         phase = Phase.FLICK
+        flickNeedsSetup = true
+        prevApexDistance = Double.NaN
         flickSpeedDegPerSec =
             uniform(FLICK_SPEED_MIN_DEG_PER_S, FLICK_SPEED_MAX_DEG_PER_S)
+    }
+
+    /**
+     * Samples the current flick's apex from live angles: short flicks and active attacks go
+     * straight at the target, everything else aims past it by a fraction of the approach angle.
+     */
+    private fun setupFlick(
+        viewYaw: Float,
+        viewPitch: Float,
+        idealYaw: Float,
+        idealPitch: Float,
+        attacking: Boolean,
+    ) {
+        flickNeedsSetup = false
+        val dyaw = Mth.wrapDegrees(idealYaw - viewYaw).toDouble()
+        val dpitch = (idealPitch - viewPitch).toDouble()
+        val initialDistance = sqrt(dyaw * dyaw + dpitch * dpitch)
+        if (attacking || initialDistance < OVERSHOOT_MIN_DISTANCE_DEG) {
+            overshootDeg = 0.0
+            return
+        }
+        overshootDeg = (initialDistance * uniform(OVERSHOOT_MIN_FRACTION, OVERSHOOT_MAX_FRACTION))
+            .coerceAtMost(OVERSHOOT_MAX_DEG)
+        overshootDirYaw = (dyaw / initialDistance).toFloat()
+        overshootDirPitch = (dpitch / initialDistance).toFloat()
+    }
+
+    /** Starts lagged tracking from where the view actually is so the handover never jumps. */
+    private fun enterTrack(viewYaw: Float, viewPitch: Float) {
+        phase = Phase.TRACK
+        trackYaw = viewYaw
+        trackPitch = viewPitch
     }
 
     /** Resamples the gaussian anchor offset and the per-axis drift wanderers. */
