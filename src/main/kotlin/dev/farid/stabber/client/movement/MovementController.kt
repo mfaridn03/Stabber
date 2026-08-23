@@ -20,9 +20,6 @@ object MovementController {
     var right: Boolean = false
         private set
 
-    var sprint: Boolean = false
-        private set
-
     var sneak: Boolean = false
         private set
 
@@ -33,7 +30,6 @@ object MovementController {
         backward: Boolean = false,
         left: Boolean = false,
         right: Boolean = false,
-        sprint: Boolean = false,
         sneak: Boolean = false,
         jump: Boolean = false,
     ) {
@@ -42,7 +38,6 @@ object MovementController {
         this.backward = backward
         this.left = left
         this.right = right
-        this.sprint = sprint
         this.sneak = sneak
         if (jump) {
             jumpQueued = true
@@ -67,7 +62,6 @@ object MovementController {
         backward = false
         left = false
         right = false
-        sprint = false
         sneak = false
         jumpQueued = false
     }

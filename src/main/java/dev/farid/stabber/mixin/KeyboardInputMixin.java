@@ -29,9 +29,8 @@ public abstract class KeyboardInputMixin extends ClientInput {
         boolean right = this.keyPresses.right() || MovementController.INSTANCE.getRight();
         boolean jump = this.keyPresses.jump() || MovementController.INSTANCE.consumeJump();
         boolean shift = this.keyPresses.shift() || MovementController.INSTANCE.getSneak();
-        boolean sprint = this.keyPresses.sprint() || MovementController.INSTANCE.getSprint();
 
-        this.keyPresses = new Input(forward, backward, left, right, jump, shift, sprint);
+        this.keyPresses = new Input(forward, backward, left, right, jump, shift, this.keyPresses.sprint());
         float forwardImpulse = stabber$impulse(forward, backward);
         float leftImpulse = stabber$impulse(left, right);
         this.moveVector = new Vec2(leftImpulse, forwardImpulse).normalized();

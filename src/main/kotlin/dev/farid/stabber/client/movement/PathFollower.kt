@@ -36,9 +36,6 @@ object PathFollower {
     private const val TARGET_AIM_RATE_DEG_PER_SEC = 540.0
     /** Window over which the view slides off the path carrot and onto the target. */
     private const val TARGET_AIM_BLEND_MS = 400.0
-    private const val SPRINT_YAW_TOLERANCE = 20.0f
-    /** Blocks of path left; below this the run-up is not worth the loss of turn authority. */
-    private const val SPRINT_MIN_REMAINING = 3.0
     private const val STUCK_SPEED_EPS = 0.01
     private const val STUCK_TICKS = 8
 
@@ -177,7 +174,7 @@ object PathFollower {
         // Interaction range is several blocks; keep tracking the path until the last leg so a nearby
         // target does not steal the look while jump/walk nodes are still ahead.
         if (target != null && onFinalLeg(nodes, fix) && canAttack(player, target)) {
-            MovementController.apply(forward = false, sprint = false)
+            MovementController.apply(forward = false)
             stuckTicks = 0
             rememberPos(player)
             return
@@ -199,14 +196,10 @@ object PathFollower {
         val strafeLeft = steerBucket < 0
         val strafeRight = steerBucket > 0
 
-        val yawError = abs(Mth.degreesDifference(player.yRot, yawToward(player, carrot)))
-        val sprint = forward && yawError <= SPRINT_YAW_TOLERANCE && remaining > SPRINT_MIN_REMAINING
-
         MovementController.apply(
             forward = forward,
             left = strafeLeft,
             right = strafeRight,
-            sprint = sprint,
             jump = shouldJump(player, node),
         )
 

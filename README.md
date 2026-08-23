@@ -46,8 +46,6 @@ strafe keys. Look direction and travel direction are deliberately independent.
 | `TURN_RATE_DEG_PER_SEC` | 180.0 | Head turn speed while following the path. |
 | `TARGET_AIM_RATE_DEG_PER_SEC` | 540.0 | Head turn speed while acquiring a nearby target. |
 | `TARGET_AIM_BLEND_MS` | 400.0 | Window over which the view slides from carrot onto target. |
-| `SPRINT_YAW_TOLERANCE` | 20 deg | Max heading error while sprinting straight. |
-| `SPRINT_MIN_REMAINING` | 3.0 | Blocks left below which sprinting is dropped to regain turn authority. |
 | `CROSSTRACK_GAIN` | 1.0 | Sideways correction commanded per block of offset from the path line. |
 | `CROSSTRACK_DAMPING` | 3.0 | Damping on offset rate-of-change so correction doesn't weave. |
 | `MAX_LATERAL` | 1.0 | Caps the crosstrack correction at ~45° off the segment. |
@@ -113,7 +111,7 @@ knockbacks feels slow.
 ## Fighting — `combat/`
 
 Select a target like for pathfinding (middle mouse on the crosshair pick), then `/fight`. The bot
-walks at the target holding W+sprint and releases inside melee distance, rests the cursor on the
+walks at the target holding W and releases inside melee distance, rests the cursor on the
 opponent instead of tracking them (gliding back toward their centre only when strafing pushes the
 hitbox toward the edge of view), and clicks at a wandering 8–12 CPS delivered through vanilla's own
 attack-key path (`KeyMapping.click`, so cooldowns, miss swings and knockback behave exactly like
@@ -141,13 +139,14 @@ Tuning guide:
 ### Aim — `CombatAim.kt`
 
 The cursor's offset from the hitbox centre is measured in *apparent radii* — degrees off centre
-divided by `atan(halfDiagonal / distance)` — so one hysteresis band works at every range. Pitch hugs
-zero wherever possible because horizontal rays keep the full interaction range.
+divided by `atan(halfDiagonal / distance)` — so one hysteresis band works at every range. Pitch
+hugs zero whenever a level ray already passes through the hitbox (which also keeps the full
+interaction range); only boxes entirely above or below the horizon pull pitch off zero.
 
 | Constant | Default | What it controls |
 |---|---|---|
 | `PITCH_LIMIT_DEG` | 30° | Saturation clamp for pitch; targets higher/lower than this stop pulling the view further down/up. |
-| `PITCH_DEADBAND_DEG` | 6° | Vertical angles within this band of level are treated as exactly level. |
+| `PITCH_DEADBAND_DEG` | 6° | Required pitch corrections within this band of level are treated as exactly level. |
 | `PITCH_REACQUIRE_DEG` | 0.6° | A settled pitch is left alone until the error grows past this. |
 | `PITCH_ONLY_RATE_DEG_PER_SEC` | 120 | Turn speed cap while correcting pitch alone. |
 | `HOVER_ENTER` | 0.55 | Offset below which the cursor counts as resting centred (no rotation issued). |

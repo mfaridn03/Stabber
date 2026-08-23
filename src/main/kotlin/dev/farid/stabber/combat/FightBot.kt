@@ -15,7 +15,7 @@ import kotlin.math.sqrt
 
 /**
  * The fightbot module. Select a target like for pathfinding (middle mouse on the crosshair pick),
- * then `/fight` toggles fighting it: walk at the target holding W+sprint until close enough,
+ * then `/fight` toggles fighting it: walk at the target holding W until close enough,
  * aim per [CombatAim], and click per [HumanClicker]. Mutually exclusive with pathfinding —
  * whichever starts second stops the other.
  */
@@ -135,7 +135,7 @@ object FightBot {
     }
 
     /**
-     * Holds W (+sprint) while farther than [STOP_DISTANCE_XZ] from the target and releases inside
+     * Holds W while farther than [STOP_DISTANCE_XZ] from the target and releases inside
      * it, with [RESUME_HYSTERESIS_XZ] of hysteresis on the resume edge.
      */
     private fun updateMovement(player: LocalPlayer, target: LivingEntity) {
@@ -144,7 +144,7 @@ object FightBot {
         val distXz = sqrt(dx * dx + dz * dz)
         val threshold = STOP_DISTANCE_XZ + if (walking) RESUME_HYSTERESIS_XZ else 0.0
         walking = distXz > threshold
-        MovementController.apply(forward = walking, sprint = walking)
+        MovementController.apply(forward = walking)
     }
 
     /**
