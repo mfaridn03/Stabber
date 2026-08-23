@@ -24,7 +24,7 @@ object FightBot {
     const val STOP_DISTANCE_XZ: Double = 1.5
 
     /** Extra horizontal distance required to resume walking, so W does not chatter at the boundary. */
-    const val RESUME_HYSTERESIS_XZ: Double = 0.25
+    const val RESUME_HYSTERESIS_XZ: Double = 1.0
 
     /** Clicking starts once the target is inside this distance band, sampled per fight. */
     const val CLICK_START_MIN_X: Double = 4.0

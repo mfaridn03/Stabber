@@ -11,6 +11,10 @@ import kotlin.math.sqrt
  * so rotation still flows through vanilla's own turn path (sensitivity, invert options, tutorial
  * hook, vehicle passenger turning).
  *
+ * Emitted deltas are always whole pixels with sub-pixel remainders carried across frames, matching
+ * real mouse hardware: every resulting yaw/pitch delta is an integer multiple of the current
+ * sensitivity step, keeping rotations on the grid that GCD-based anticheat checks expect.
+ *
  * Each axis runs a three-stage pipeline, recomputed against the player's live rotation every frame:
  * the requested angle feeds an exponentially smoothed reference, so retargeting never jumps; the
  * remaining error commands a turn speed; and that speed is approached under an acceleration limit,
@@ -66,6 +70,10 @@ object RotationController {
 
     private val yawAxis = Axis(DRIFT_YAW_DEG)
     private val pitchAxis = Axis(DRIFT_PITCH_DEG)
+
+    /** Sub-pixel motion not yet emitted; real mice can only report whole-pixel deltas. */
+    private var carryX = 0.0
+    private var carryY = 0.0
 
     val isRotating: Boolean
         get() = targetYaw != null || targetPitch != null
@@ -123,6 +131,8 @@ object RotationController {
         maxStep = DEFAULT_MAX_STEP
         yawAxis.reset()
         pitchAxis.reset()
+        carryX = 0.0
+        carryY = 0.0
     }
 
     /**
@@ -131,6 +141,9 @@ object RotationController {
      * accumulated mouse movement, so the caller owns sensitivity and the invert options.
      * [deltaSeconds] is the wall-clock duration of this frame; [maxStep] caps steady-state speed,
      * while profile shape comes from the reference filter and acceleration limit.
+     *
+     * Both components are whole pixels: sub-pixel motion is banked and released once it sums to a
+     * pixel, so applied rotations stay integer multiples of the caller's per-unit scale.
      */
     fun consumeFrameDelta(
         player: Entity,
@@ -153,6 +166,15 @@ object RotationController {
             return degrees / degreesPerUnit
         }
 
+        // Snap to whole pixels, banking the remainder: vanilla multiplies the accumulated delta by
+        // a fixed sensitivity factor, so integer deltas keep every rotation change an exact
+        // multiple of that step — the grid real mouse input lands on.
+        fun quantize(wanted: Double, carry: Double): Pair<Double, Double> {
+            val total = wanted + carry
+            val emitted = Math.rint(total)
+            return emitted to total - emitted
+        }
+
         var dx = 0.0
         if (yaw != null) {
             val deg = yawAxis.step(
@@ -163,8 +185,13 @@ object RotationController {
                 time = clock,
                 maxRate = maxStep,
             )
-            dx = toMouseUnits(deg, degreesPerUnitX)
-            if (yawAxis.settled) targetYaw = null
+            val (emitted, rest) = quantize(toMouseUnits(deg, degreesPerUnitX), carryX)
+            carryX = rest
+            dx = emitted
+            if (yawAxis.settled) {
+                targetYaw = null
+                carryX = 0.0
+            }
         }
 
         var dy = 0.0
@@ -177,8 +204,13 @@ object RotationController {
                 time = clock,
                 maxRate = maxStep,
             )
-            dy = toMouseUnits(deg, degreesPerUnitY)
-            if (pitchAxis.settled) targetPitch = null
+            val (emitted, rest) = quantize(toMouseUnits(deg, degreesPerUnitY), carryY)
+            carryY = rest
+            dy = emitted
+            if (pitchAxis.settled) {
+                targetPitch = null
+                carryY = 0.0
+            }
         }
 
         if (!isRotating) {
