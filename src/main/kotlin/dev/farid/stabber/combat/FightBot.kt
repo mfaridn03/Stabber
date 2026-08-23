@@ -173,6 +173,7 @@ object FightBot {
         clicking = false
         clickGateDistance = uniform(CLICK_START_MIN_X, CLICK_START_MAX_X)
         clicker.reset(System.nanoTime())
+        CombatAim.reset()
         MovementController.release()
         RotationController.cancel()
     }
