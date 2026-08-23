@@ -23,8 +23,8 @@ object FightBot {
     /** Horizontal distance at which forward input drops so the bot never walks inside the target. */
     const val STOP_DISTANCE_XZ: Double = 1.5
 
-    /** Extra horizontal distance required to resume walking, so W does not chatter at the boundary. */
-    const val RESUME_HYSTERESIS_XZ: Double = 1.0
+    /** Horizontal distance beyond which the target counts as unattackable and walking resumes. */
+    const val ENGAGE_DISTANCE_XZ: Double = 3.0
 
     /** Clicking starts once the target is inside this distance band, sampled per fight. */
     const val CLICK_START_MIN_X: Double = 4.0
@@ -43,8 +43,8 @@ object FightBot {
     var fighting: Boolean = false
         private set
 
-    /** True while forward input is held; carried between ticks for [RESUME_HYSTERESIS_XZ]. */
-    private var walking = false
+    /** True while in the adjust state: closing distance until [STOP_DISTANCE_XZ]. */
+    private var adjusting = false
 
     private val clicker = HumanClicker()
 
@@ -135,16 +135,21 @@ object FightBot {
     }
 
     /**
-     * Holds W while farther than [STOP_DISTANCE_XZ] from the target and releases inside
-     * it, with [RESUME_HYSTERESIS_XZ] of hysteresis on the resume edge.
+     * Latched adjust state instead of per-tick distance checks: once the target is out of
+     * attack range the bot walks toward it until [STOP_DISTANCE_XZ], then releases forward
+     * and lets momentum coast the rest of the way. Mid-approach fluctuations do not restart
+     * or cut W, which is what made the old hysteresis band stutter.
      */
     private fun updateMovement(player: LocalPlayer, target: LivingEntity) {
         val dx = target.x - player.x
         val dz = target.z - player.z
         val distXz = sqrt(dx * dx + dz * dz)
-        val threshold = STOP_DISTANCE_XZ + if (walking) RESUME_HYSTERESIS_XZ else 0.0
-        walking = distXz > threshold
-        MovementController.apply(forward = walking)
+        if (!adjusting && distXz > ENGAGE_DISTANCE_XZ) {
+            adjusting = true
+        } else if (adjusting && distXz <= STOP_DISTANCE_XZ) {
+            adjusting = false
+        }
+        MovementController.apply(forward = adjusting)
     }
 
     /**
@@ -164,7 +169,7 @@ object FightBot {
     }
 
     private fun reset() {
-        walking = false
+        adjusting = false
         clicking = false
         clickGateDistance = uniform(CLICK_START_MIN_X, CLICK_START_MAX_X)
         clicker.reset(System.nanoTime())

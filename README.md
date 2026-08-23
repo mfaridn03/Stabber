@@ -121,8 +121,8 @@ real presses). Mutually exclusive with pathfinding — whichever starts second s
 
 | Constant | Default | What it controls |
 |---|---|---|
-| `STOP_DISTANCE_XZ` | 1.5 | Horizontal distance where forward input drops so the bot never walks inside the target. |
-| `RESUME_HYSTERESIS_XZ` | 0.25 | Extra distance required to resume walking so W does not chatter at the boundary. |
+| `STOP_DISTANCE_XZ` | 1.5 | Horizontal distance where the adjust state releases forward so the bot never walks inside the target. |
+| `ENGAGE_DISTANCE_XZ` | 3.0 | Horizontal distance beyond which the target counts as unattackable and walking resumes (latched adjust state). |
 | `CLICK_START_MIN_X` / `CLICK_START_MAX_X` | 4.0–5.2 | Distance band from which clicking engages, sampled once per fight like a player who starts mousing before reach. |
 | `CLICK_STOP_MARGIN_X` | 0.75 | Extra distance required before clicking pauses again (gate hysteresis). |
 | `CLICK_GATE_DRIFT_SIGMA_X` | 0.015 | Per-tick random walk step on the click-start distance, so it is never a constant. |
@@ -131,7 +131,7 @@ real presses). Mutually exclusive with pathfinding — whichever starts second s
 Tuning guide:
 
 - **Walks too deep into the target?** Lower `STOP_DISTANCE_XZ`; raise it if it stops out of reach.
-- **W stutters right at contact range?** Raise `RESUME_HYSTERESIS_XZ`.
+- **Lags behind a retreating target?** Raise `ENGAGE_DISTANCE_XZ` so walking re-engages sooner.
 - **Starts clicking suspiciously early/late?** Shift the `CLICK_START_*` band; the drift bounds
   follow it automatically.
 - **Gate flickers when the target dashes away?** Raise `CLICK_STOP_MARGIN_X`.
