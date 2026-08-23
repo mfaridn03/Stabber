@@ -23,9 +23,10 @@ import kotlin.random.Random
  * GCD-safe delivery in [RotationController] allows.
  *
  * A freshly acquired target is not tracked immediately: aiming starts only after a per-acquisition
- * sampled human reaction delay. The aim point itself is a gaussian-weighted offset from the
- * target's centre that slowly wanders via per-axis drift noise, instead of pinning dead centre.
- * Corrections run in two phases — a ballistic flick that eases out onto an apex placed slightly
+ * sampled human reaction delay. The aim point's horizontal placement is a gaussian-weighted offset
+ * from the target's centre that slowly wanders; its height hangs on the shooter's own eye line a
+ * sampled drop below, so elevation differences are absorbed by hitting the target higher or lower
+ * on their body instead of pitching. Corrections run in two phases — a ballistic flick that eases out onto an apex placed slightly
  * past the target and then settles back, switching to a soft lagged tracking filter once close,
  * and back to a fresh flick if the target escapes. Moving targets are only partially led: the
  * aim point shifts ahead by a noisy fraction of their motion, so tracking stays slightly
@@ -146,6 +147,21 @@ object CombatAim {
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
+    /** Lower bound of the sampled aim-height drop below the shooter's own eyes, blocks. */
+    const val AIM_DROP_MIN_BLOCKS: Double = 0.25
+
+    /** Upper bound of the sampled aim-height drop below the shooter's own eyes, blocks. */
+    const val AIM_DROP_MAX_BLOCKS: Double = 0.45
+
+    /** Lower bound of the sampled soft-knee size of the vertical clamp, blocks. */
+    const val CLAMP_KNEE_MIN_BLOCKS: Double = 0.10
+
+    /** Upper bound of the sampled soft-knee size of the vertical clamp, blocks. */
+    const val CLAMP_KNEE_MAX_BLOCKS: Double = 0.22
+
+    /** Peak slow wobble of the vertical clamp bounds; lets the clamp sit off-perfect. */
+    const val CLAMP_BREATH_BLOCKS: Double = 0.06
+
     /** Margin kept from the hitbox edge for any combined aim offset, blocks. */
     const val AIM_EDGE_MARGIN_BLOCKS: Double = 0.05
 
@@ -233,6 +249,16 @@ object CombatAim {
     private var smoothedVelX = 0.0
     private var smoothedVelZ = 0.0
 
+    /** Wanderer breathing life into the vertical clamp bounds. */
+    private var boundBreathDrift =
+        AxisDrift(Random.nextLong(), CLAMP_BREATH_BLOCKS, DRIFT_FREQUENCY_HZ)
+
+    /** Per-fight drop of the preferred aim height below the shooter's own eyes, blocks. */
+    private var aimDropBelowEye = (AIM_DROP_MIN_BLOCKS + AIM_DROP_MAX_BLOCKS) / 2.0
+
+    /** Per-fight soft-knee size of the vertical clamp; deeper violations settle closer in. */
+    private var clampKneeBlocks = (CLAMP_KNEE_MIN_BLOCKS + CLAMP_KNEE_MAX_BLOCKS) / 2.0
+
     /** Per-axis hand tremor wanderers resampled at acquisition with their own amplitudes. */
     private var tremorYawDrift =
         AxisDrift(Random.nextLong(), uniform(TREMOR_MIN_DEG, TREMOR_MAX_DEG), TREMOR_BASE_FREQ_HZ)
@@ -260,6 +286,10 @@ object CombatAim {
             sampleAimOffset(target)
             trackBandwidthDrift =
                 AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER, DRIFT_FREQUENCY_HZ)
+            aimDropBelowEye = uniform(AIM_DROP_MIN_BLOCKS, AIM_DROP_MAX_BLOCKS)
+            clampKneeBlocks = uniform(CLAMP_KNEE_MIN_BLOCKS, CLAMP_KNEE_MAX_BLOCKS)
+            boundBreathDrift =
+                AxisDrift(Random.nextLong(), CLAMP_BREATH_BLOCKS, DRIFT_FREQUENCY_HZ)
             leadFraction = uniform(PREDICT_LEAD_MIN_FRACTION, PREDICT_LEAD_MAX_FRACTION)
             leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE, DRIFT_FREQUENCY_HZ)
             tremorYawDrift =
@@ -300,9 +330,9 @@ object CombatAim {
         // boundingBox only updates once per tick; slide it onto the render-frame interpolated
         // position so the locked angles track what is actually drawn.
         val interp = target.getPosition(partialTick)
-        var centre: Vec3 = target.boundingBox
+        val slidBox = target.boundingBox
             .move(interp.x - target.x, interp.y - target.y, interp.z - target.z)
-            .center
+        var centre: Vec3 = slidBox.center
 
         // Estimate horizontal target velocity by smoothing observed frame-to-frame motion.
         // Vertical motion is ignored so jumps and falls do not yank the aim point around.
@@ -316,20 +346,39 @@ object CombatAim {
         prevInterpX = interp.x
         prevInterpZ = interp.z
 
-        // Gaussian-weighted aim point that slowly wanders instead of pinning dead centre.
-        val bb = target.boundingBox
+        // Gaussian-weighted horizontal aim point that slowly wanders instead of pinning dead
+        // centre. Vertically the point hangs on the shooter's own eye line, a sampled drop
+        // below it: holding the crosshair level is cheaper than pitching, so an elevated
+        // target gets hit low and a depressed one high — like a person who refuses to bend
+        // their aim and lets reach decide where the swing lands.
         val elapsedSeconds = (nowNanos - acquiredNanos) / 1.0e9
-        val halfExtents = doubleArrayOf(bb.xsize / 2.0, bb.ysize / 2.0, bb.zsize / 2.0)
-        for (axis in 0..2) {
+        val halfExtents =
+            doubleArrayOf(slidBox.xsize / 2.0, slidBox.ysize / 2.0, slidBox.zsize / 2.0)
+        for (axis in intArrayOf(0, 2)) {
             val limit = maxOf(halfExtents[axis] - AIM_EDGE_MARGIN_BLOCKS, 0.0)
             val drift = axisDrifts[axis]?.at(elapsedSeconds) ?: 0.0
             val offset = (anchorOffset[axis] + drift).coerceIn(-limit, limit)
-            centre = when (axis) {
-                0 -> centre.add(offset, 0.0, 0.0)
-                1 -> centre.add(0.0, offset, 0.0)
-                else -> centre.add(0.0, 0.0, offset)
-            }
+            centre =
+                if (axis == 0) centre.add(offset, 0.0, 0.0) else centre.add(0.0, 0.0, offset)
         }
+
+        // The clamp itself is deliberately imperfect: its bounds breathe over time (occasionally
+        // grazing the true edge), and violations ease in through a per-fight soft knee instead of
+        // pinning machined-exact at the wall — deep overshoots settle near-but-not-at the edge.
+        val verticalMargin = (AIM_EDGE_MARGIN_BLOCKS + boundBreathDrift.at(elapsedSeconds))
+            .coerceIn(-AIM_EDGE_MARGIN_BLOCKS / 2.0, AIM_EDGE_MARGIN_BLOCKS * 2.0)
+        val desiredAimY =
+            eye.y - aimDropBelowEye + (axisDrifts[1]?.at(elapsedSeconds) ?: 0.0)
+        centre = Vec3(
+            centre.x,
+            softClamp(
+                desiredAimY,
+                slidBox.minY + verticalMargin,
+                slidBox.maxY - verticalMargin,
+                clampKneeBlocks,
+            ),
+            centre.z,
+        )
 
         // Partial lead: aim ahead of the target's motion by a sampled fraction of a short
         // horizon — never full compensation, and the fraction itself wobbles over time so the
@@ -477,18 +526,32 @@ object CombatAim {
         trackPitch = viewPitch
     }
 
-    /** Resamples the gaussian anchor offset and the per-axis drift wanderers. */
+    /** Resamples the horizontal gaussian anchor offsets and the per-axis drift wanderers. */
     private fun sampleAimOffset(target: LivingEntity) {
         val bb = target.boundingBox
-        val halfExtents =
-            doubleArrayOf(bb.xsize / 2.0, bb.ysize / 2.0, bb.zsize / 2.0)
-        for (axis in 0..2) {
+        val halfExtents = doubleArrayOf(bb.xsize / 2.0, bb.ysize / 2.0, bb.zsize / 2.0)
+        // Horizontal axes only: vertical placement is anchored to the shooter's own eye line,
+        // so there is no box-space Y anchor to draw any more.
+        for (axis in intArrayOf(0, 2)) {
             // Sigma scales with the hitbox so a pig gets gentler offsets than an iron golem.
             val limit = maxOf(halfExtents[axis] - AIM_EDGE_MARGIN_BLOCKS, 0.0)
             anchorOffset[axis] =
                 (halfExtents[axis] * AIM_SIGMA_OF_HALF_EXTENT * gaussian()).coerceIn(-limit, limit)
-            axisDrifts[axis] = AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS, DRIFT_FREQUENCY_HZ)
+            axisDrifts[axis] =
+                AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS, DRIFT_FREQUENCY_HZ)
         }
+        // Axis 1 keeps only its wanderer: it jitters the eye-line drop, not a box-space anchor.
+        axisDrifts[1] = AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS, DRIFT_FREQUENCY_HZ)
+    }
+
+    /**
+     * Saturating clamp: violations of [lo]/[hi] ease in through [knee] and settle just inside
+     * the bound rather than pinning machined-exact against it. C1-continuous at both walls.
+     */
+    private fun softClamp(value: Double, lo: Double, hi: Double, knee: Double): Double = when {
+        value < lo -> lo + knee * (1.0 - exp(-(lo - value) / knee))
+        value > hi -> hi - knee * (1.0 - exp(-(value - hi) / knee))
+        else -> value
     }
 
     /** Standard normal via Box-Muller. */
