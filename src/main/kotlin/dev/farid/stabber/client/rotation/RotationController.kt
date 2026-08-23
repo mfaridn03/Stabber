@@ -36,8 +36,11 @@ object RotationController {
     var targetPitch: Float? = null
         private set
 
-    /** Degrees per second. */
+    /** Degrees per second applied to the yaw axis. */
     private var maxStep: Double = DEFAULT_MAX_STEP
+
+    /** Degrees per second applied to the pitch axis; humans turn horizontally faster. */
+    private var maxStepPitch: Double = DEFAULT_MAX_STEP
 
     /** Sub-pixel motion not yet emitted; real mice can only report whole-pixel deltas. */
     private var carryX = 0.0
@@ -48,9 +51,15 @@ object RotationController {
 
     /**
      * Rotates toward [yaw] and/or [pitch]; a null component leaves that axis under user control.
-     * [maxStepDegrees] caps how far each axis moves per second.
+     * [maxStepDegrees] caps yaw speed and [maxStepPitchDegrees] pitch speed, each in degrees per
+     * second.
      */
-    fun rotateTo(yaw: Float?, pitch: Float?, maxStepDegrees: Double = DEFAULT_MAX_STEP) {
+    fun rotateTo(
+        yaw: Float?,
+        pitch: Float?,
+        maxStepDegrees: Double = DEFAULT_MAX_STEP,
+        maxStepPitchDegrees: Double = maxStepDegrees,
+    ) {
         if (yaw == null && pitch == null) {
             cancel()
             return
@@ -58,6 +67,7 @@ object RotationController {
         targetYaw = yaw?.let { Mth.wrapDegrees(it) }
         targetPitch = pitch?.let { Mth.clamp(it, -90.0f, 90.0f) }
         maxStep = maxStepDegrees.coerceAtLeast(EPSILON)
+        maxStepPitch = maxStepPitchDegrees.coerceAtLeast(EPSILON)
     }
 
     /** Turns at full speed — as far as the GCD-safe delivery allows in one frame. */
@@ -89,6 +99,7 @@ object RotationController {
         targetYaw = null
         targetPitch = null
         maxStep = DEFAULT_MAX_STEP
+        maxStepPitch = DEFAULT_MAX_STEP
         carryX = 0.0
         carryY = 0.0
     }
@@ -147,7 +158,7 @@ object RotationController {
                 targetPitch = null
                 carryY = 0.0
             } else {
-                val deg = error.coerceIn(-maxStep * dt, maxStep * dt)
+                val deg = error.coerceIn(-maxStepPitch * dt, maxStepPitch * dt)
                 val (emitted, rest) = quantize(deg, carryY, degreesPerUnitY)
                 carryY = rest
                 dy = emitted
@@ -156,6 +167,7 @@ object RotationController {
 
         if (!isRotating) {
             maxStep = DEFAULT_MAX_STEP
+            maxStepPitch = DEFAULT_MAX_STEP
         }
         return Step(dx, dy)
     }

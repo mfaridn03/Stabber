@@ -77,6 +77,18 @@ object CombatAim {
     /** Hard cap on tracking-phase rotation speed, degrees per second. */
     const val TRACK_MAX_STEP_DEG_PER_S: Double = 120.0
 
+    /** Lower bound of the sampled yaw speed multiplier over pitch; horizontal sweeps are faster. */
+    const val YAW_BIAS_MIN: Double = 1.35
+
+    /** Upper bound of the sampled yaw speed multiplier over pitch. */
+    const val YAW_BIAS_MAX: Double = 1.75
+
+    /** Lower bound of the sampled deadzone widening along yaw. */
+    const val DEADZONE_YAW_SCALE_MIN: Double = 1.15
+
+    /** Upper bound of the sampled deadzone widening along yaw. */
+    const val DEADZONE_YAW_SCALE_MAX: Double = 1.45
+
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
@@ -109,6 +121,12 @@ object CombatAim {
 
     /** Per-acquisition tightened tolerance while attacking, degrees. */
     private var attackDeadzoneDeg = (ATTACK_DEADZONE_MIN_DEG + ATTACK_DEADZONE_MAX_DEG) / 2.0
+
+    /** Per-acquisition yaw speed multiplier over pitch, applied to every rotation request. */
+    private var yawSpeedBias = (YAW_BIAS_MIN + YAW_BIAS_MAX) / 2.0
+
+    /** Per-acquisition widening of the deadzone along yaw, where horizontal error matters less. */
+    private var deadzoneYawScale = (DEADZONE_YAW_SCALE_MIN + DEADZONE_YAW_SCALE_MAX) / 2.0
 
     private var phase = Phase.FLICK
 
@@ -145,6 +163,8 @@ object CombatAim {
                 (uniform(REACTION_MIN_MS, REACTION_MAX_MS) * 1.0e6).toLong()
             holdDeadzoneDeg = uniform(HOLD_DEADZONE_MIN_DEG, HOLD_DEADZONE_MAX_DEG)
             attackDeadzoneDeg = uniform(ATTACK_DEADZONE_MIN_DEG, ATTACK_DEADZONE_MAX_DEG)
+            yawSpeedBias = uniform(YAW_BIAS_MIN, YAW_BIAS_MAX)
+            deadzoneYawScale = uniform(DEADZONE_YAW_SCALE_MIN, DEADZONE_YAW_SCALE_MAX)
             sampleAimOffset(target)
             enterFlick()
             lastAimNanos = 0L
@@ -199,11 +219,12 @@ object CombatAim {
 
         // Lazy hold: while the view sits inside the tolerance band no corrections are issued at
         // all. Right after a click the band tightens so swings land on target, then widens again.
+        // The yaw zone runs wider — horizontal misses bother a human less than vertical ones.
         val yawError = abs(Mth.wrapDegrees(yaw - player.yRot).toDouble())
         val pitchError = abs((pitch - player.xRot).toDouble())
         val attacking = AttackController.recentlyAttacked(nowNanos, ATTACK_WINDOW_MS)
         val deadzone = if (attacking) attackDeadzoneDeg else holdDeadzoneDeg
-        if (maxOf(yawError, pitchError) <= deadzone) {
+        if (yawError <= deadzone * deadzoneYawScale && pitchError <= deadzone) {
             RotationController.cancel()
             return
         }
@@ -228,12 +249,17 @@ object CombatAim {
         if (phase == Phase.FLICK) {
             val stepCap = (distance * FLICK_GAIN_PER_S)
                 .coerceIn(FLICK_MIN_STEP_DEG_PER_S, flickSpeedDegPerSec)
-            RotationController.rotateTo(yaw, pitch, stepCap)
+            RotationController.rotateTo(yaw, pitch, stepCap * yawSpeedBias, stepCap)
         } else {
             val alpha = (1.0 - exp(-TRACK_BANDWIDTH_PER_S * dtSeconds)).toFloat()
             trackYaw += Mth.wrapDegrees(yaw - trackYaw) * alpha
             trackPitch += (pitch - trackPitch) * alpha
-            RotationController.rotateTo(trackYaw, trackPitch, TRACK_MAX_STEP_DEG_PER_S)
+            RotationController.rotateTo(
+                trackYaw,
+                trackPitch,
+                TRACK_MAX_STEP_DEG_PER_S * yawSpeedBias,
+                TRACK_MAX_STEP_DEG_PER_S,
+            )
         }
     }
 
