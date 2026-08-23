@@ -18,9 +18,22 @@ object AttackController {
 
     private var pendingClicks = 0
 
+    /** When the last synthetic click was scheduled; zero until one fires. */
+    private var lastClickNanos = 0L
+
     /** Called from the render frame when the click scheduler fires. */
     fun enqueue() {
         pendingClicks++
+        lastClickNanos = System.nanoTime()
+    }
+
+    /**
+     * True while a synthetic click went out within [windowMs] of [nowNanos] — the window during
+     * which the bot counts as actively attacking rather than holding its aim.
+     */
+    fun recentlyAttacked(nowNanos: Long, windowMs: Double): Boolean {
+        if (lastClickNanos == 0L) return false
+        return nowNanos - lastClickNanos <= (windowMs * 1.0e6).toLong()
     }
 
     fun beforeHandleKeybinds(minecraft: Minecraft) {
