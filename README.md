@@ -110,6 +110,105 @@ health equals the value exactly. Change them only if the server's entity stats c
 Raise `OFF_PATH_COOLDOWN` if recomputes pile up during lag spikes; lower it only if recovery from
 knockbacks feels slow.
 
+## Fighting — `combat/`
+
+Select a target like for pathfinding (middle mouse on the crosshair pick), then `/fight`. The bot
+walks at the target holding W+sprint and releases inside melee distance, rests the cursor on the
+opponent instead of tracking them (gliding back toward their centre only when strafing pushes the
+hitbox toward the edge of view), and clicks at a wandering 8–12 CPS delivered through vanilla's own
+attack-key path (`KeyMapping.click`, so cooldowns, miss swings and knockback behave exactly like
+real presses). Mutually exclusive with pathfinding — whichever starts second stops the other.
+
+### Approach — `FightBot.kt`
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `STOP_DISTANCE_XZ` | 1.5 | Horizontal distance where forward input drops so the bot never walks inside the target. |
+| `RESUME_HYSTERESIS_XZ` | 0.25 | Extra distance required to resume walking so W does not chatter at the boundary. |
+| `CLICK_START_MIN_X` / `CLICK_START_MAX_X` | 4.0–5.2 | Distance band from which clicking engages, sampled once per fight like a player who starts mousing before reach. |
+| `CLICK_STOP_MARGIN_X` | 0.75 | Extra distance required before clicking pauses again (gate hysteresis). |
+| `CLICK_GATE_DRIFT_SIGMA_X` | 0.015 | Per-tick random walk step on the click-start distance, so it is never a constant. |
+| `CLICK_GATE_MIN_X` / `CLICK_GATE_MAX_X` | 3.7–5.5 | Bounds on how far the drifting click gate may wander. |
+
+Tuning guide:
+
+- **Walks too deep into the target?** Lower `STOP_DISTANCE_XZ`; raise it if it stops out of reach.
+- **W stutters right at contact range?** Raise `RESUME_HYSTERESIS_XZ`.
+- **Starts clicking suspiciously early/late?** Shift the `CLICK_START_*` band; the drift bounds
+  follow it automatically.
+- **Gate flickers when the target dashes away?** Raise `CLICK_STOP_MARGIN_X`.
+
+### Aim — `CombatAim.kt`
+
+The cursor's offset from the hitbox centre is measured in *apparent radii* — degrees off centre
+divided by `atan(halfDiagonal / distance)` — so one hysteresis band works at every range. Pitch hugs
+zero wherever possible because horizontal rays keep the full interaction range.
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `PITCH_LIMIT_DEG` | 30° | Saturation clamp for pitch; targets higher/lower than this stop pulling the view further down/up. |
+| `PITCH_DEADBAND_DEG` | 6° | Vertical angles within this band of level are treated as exactly level. |
+| `PITCH_REACQUIRE_DEG` | 0.6° | A settled pitch is left alone until the error grows past this. |
+| `PITCH_ONLY_RATE_DEG_PER_SEC` | 120 | Turn speed cap while correcting pitch alone. |
+| `HOVER_ENTER` | 0.55 | Offset below which the cursor counts as resting centred (no rotation issued). |
+| `HOVER_EXIT` | 0.80 | Offset past which — near the apparent edge — a glide back to centre fires. |
+| `REACQUIRE_RATIO` | 1.5 | Offset beyond which the correction becomes a fast reacquire glance. |
+| `RECENTER_MIN_RATE_DEG_PER_SEC` / `_MAX_` | 260–400 | Glide speed rolled once per correction event. |
+| `REACQUIRE_RATE_DEG_PER_SEC` | 540 | Speed when the cursor lost the target entirely. |
+| `OVERSHOOT_MAX_FRACTION` | 0.15 | Glides may carry past centre by up to this fraction of the apparent radius, rolled per event. |
+| `MIN_APPARENT_RADIUS_DEG` | 1.5° | Floor on the apparent radius so distant targets cannot make ratios explode. |
+| `MIN_AIM_DISTANCE_XZ` | 1.0 | Below this horizontal distance bearings are meaningless; hold the view. |
+| `NUDGE_MIN_INTERVAL_S` / `_MAX_` | 0.4–1.2 s | Cadence of sub-degree micro-stutters while hovering. |
+| `NUDGE_MAX_YAW_DEG` | 0.18° | Peak size of a hover nudge. |
+| `NUDGE_RATE_DEG_PER_SEC` | 60 | Turn speed cap while playing a nudge out. |
+
+Tuning guide:
+
+- **Tracks the target too much (cursor never rests)?** Widen the gap by lowering `HOVER_ENTER`
+  and/or raising `HOVER_EXIT`.
+- **Eats hits because recentres are too slow?** Raise both `RECENTER_*` rates, or lower `HOVER_EXIT`
+  so glides fire earlier.
+- **Looks robotic when strafe-crossing?** Raise `OVERSHOOT_MAX_FRACTION` and widen the rate band.
+- **Aim sits visibly above/below heads?** Lower `PITCH_DEADBAND_DEG` (or raise it if the pitch
+  micro-adjustments bother you).
+- **Micro-stutters too visible in recordings?** Lower `NUDGE_MAX_YAW_DEG` or stretch the nudge
+  interval band.
+
+### Clicks — `HumanClicker.kt`
+
+Frame-driven scheduler: the CPS target itself wanders (resampled every few hundred ms), intervals
+are Gaussian-jittered around it and trend via AR(1)-style persistence, and the rhythm occasionally
+breaks with short fast bursts and reaction-shaped pauses.
+
+| Constant | Default | What it controls |
+|---|---|---|
+| `CPS_MIN` / `CPS_MAX` | 8–12 | Bounds between which the wandering CPS target is resampled. |
+| `JITTER_SIGMA_MS` | 8.0 | Gaussian jitter applied to every interval around the current mean. |
+| `INTERVAL_PERSISTENCE` | 0.45 | Fraction of the previous interval's deviation carried forward, so intervals trend instead of firing white noise. |
+| `INTERVAL_MIN_MS` / `INTERVAL_MAX_MS` | 45–400 ms | Hard floor/ceiling on any single interval. |
+| `RESAMPLE_MIN_S` / `RESAMPLE_MAX_S` | 0.4–0.9 s | How often the CPS target is resampled. |
+| `BURST_CHANCE_PER_WINDOW` | 0.15 | Chance per resample that a short fast burst starts. |
+| `BURST_SPEEDUP_MIN` / `_MAX_` | ×1.15–1.28 | CPS multiplier during a burst. |
+| `BURST_CLICKS_MIN` / `_MAX_` | 2–4 | Burst length bounds, clicks. |
+| `PAUSE_CHANCE_PER_CLICK` | 0.02 | Chance that a reaction-shaped pause follows a click. |
+| `PAUSE_MIN_S` / `_MAX_` | 0.12–0.35 s | Pause length bounds. |
+
+Tuning guide:
+
+- **Rhythm feels metronomic in replays?** Raise `JITTER_SIGMA_MS`, widen the `CPS_*` band, shorten
+  the resample window, or raise `PAUSE_CHANCE_PER_CLICK`.
+- **Feels sluggish in fights?** Shift `CPS_MIN`/`CPS_MAX` up together; keep `INTERVAL_MAX_MS`
+  comfortably above the mean interval so pauses still fit.
+- **Bursts look unnatural?** Lower `BURST_CHANCE_PER_WINDOW` or narrow the speedup band.
+- **Server anticheat flags interval patterns?** Raise `INTERVAL_PERSISTENCE` (more trend) and
+  `JITTER_SIGMA_MS` (more spread) together rather than jitter alone.
+
+Delivery goes through `AttackController` plus two mixins: `MinecraftMixin` injects at the head of
+`handleKeybinds`, and `KeyMappingAccessor` exposes the bound attack key (26.2 removed its public
+getter) so synthetic clicks enter through `KeyMapping.click` — the same path as real GLFW presses.
+At most `AttackController.MAX_CLICKS_PER_TICK` synthetic clicks are delivered per tick; extras are
+dropped to keep the rhythm honest under frame hitches.
+
 ## Structural constants
 
 Some constants are not tuning knobs and shouldn't move casually:
