@@ -9,7 +9,8 @@
     "MinecraftMixin",
     "EntityMixin",
     "MouseHandlerMixin",
-    "KeyboardInputMixin"
+    "KeyboardInputMixin",
+    "KeyMappingAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

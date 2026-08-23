@@ -9,6 +9,8 @@ import net.minecraft.client.Minecraft
 import net.minecraft.client.player.LocalPlayer
 import net.minecraft.network.chat.Component
 import net.minecraft.world.entity.LivingEntity
+import kotlin.math.cos
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 /**
@@ -24,11 +26,33 @@ object FightBot {
     /** Extra horizontal distance required to resume walking, so W does not chatter at the boundary. */
     const val RESUME_HYSTERESIS_XZ: Double = 0.25
 
+    /** Clicking starts once the target is inside this distance band, sampled per fight. */
+    const val CLICK_START_MIN_X: Double = 4.0
+    const val CLICK_START_MAX_X: Double = 5.2
+
+    /** Extra 3D distance required to stop clicking, so the gate does not flicker at the boundary. */
+    const val CLICK_STOP_MARGIN_X: Double = 0.75
+
+    /** Per-tick random walk step on the click-start distance, so it is never a constant. */
+    const val CLICK_GATE_DRIFT_SIGMA_X: Double = 0.015
+
+    /** Bounds the drifting click-start distance after enough walk accumulates. */
+    const val CLICK_GATE_MIN_X: Double = CLICK_START_MIN_X - 0.3
+    const val CLICK_GATE_MAX_X: Double = CLICK_START_MAX_X + 0.3
+
     var fighting: Boolean = false
         private set
 
     /** True while forward input is held; carried between ticks for [RESUME_HYSTERESIS_XZ]. */
     private var walking = false
+
+    private val clicker = HumanClicker()
+
+    /** True while inside the click envelope; carried between ticks for [CLICK_STOP_MARGIN_X]. */
+    private var clicking = false
+
+    /** Distance at which clicking engages this fight; drifts over time. */
+    private var clickGateDistance = (CLICK_START_MIN_X + CLICK_START_MAX_X) / 2.0
 
     fun toggle(minecraft: Minecraft): Boolean {
         return if (fighting) {
@@ -92,14 +116,22 @@ object FightBot {
         }
 
         updateMovement(player, target)
+        updateClickGate(player, target)
     }
 
     /**
-     * Called every render frame so aiming tracks interpolated positions between ticks.
+     * Called every render frame so aiming and clicking track interpolated positions between ticks.
      */
     fun updateAim(minecraft: Minecraft, partialTick: Float) {
         if (!fighting) return
+        val player = minecraft.player ?: return
+        if (minecraft.gui.screen() != null || player.isDeadOrDying) return
+
         CombatAim.update(minecraft, partialTick)
+
+        if (clicker.tick(System.nanoTime(), clicking)) {
+            AttackController.enqueue()
+        }
     }
 
     /**
@@ -115,10 +147,37 @@ object FightBot {
         MovementController.apply(forward = walking, sprint = walking)
     }
 
+    /**
+     * Clicking starts before the target is actually in range — like a player who begins mousing as
+     * they close in — but not always at the same distance: the gate is sampled per fight and slowly
+     * random-walks while fighting. [CLICK_STOP_MARGIN_X] of hysteresis keeps it from flickering.
+     */
+    private fun updateClickGate(player: LocalPlayer, target: LivingEntity) {
+        clickGateDistance = (clickGateDistance + gaussian() * CLICK_GATE_DRIFT_SIGMA_X)
+            .coerceIn(CLICK_GATE_MIN_X, CLICK_GATE_MAX_X)
+        val distance = player.distanceTo(target).toDouble()
+        clicking = if (clicking) {
+            distance <= clickGateDistance + CLICK_STOP_MARGIN_X
+        } else {
+            distance <= clickGateDistance
+        }
+    }
+
     private fun reset() {
         walking = false
+        clicking = false
+        clickGateDistance = uniform(CLICK_START_MIN_X, CLICK_START_MAX_X)
+        clicker.reset(System.nanoTime())
         MovementController.release()
         RotationController.cancel()
         CombatAim.reset()
     }
+
+    private fun gaussian(): Double {
+        var u = Math.random()
+        if (u < 1.0e-9) u = 1.0e-9
+        return sqrt(-2.0 * ln(u)) * cos(2.0 * Math.PI * Math.random())
+    }
+
+    private fun uniform(min: Double, max: Double): Double = min + Math.random() * (max - min)
 }
