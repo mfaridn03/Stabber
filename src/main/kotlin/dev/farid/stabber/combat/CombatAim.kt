@@ -14,8 +14,9 @@ import kotlin.math.sign
 
 /**
  * Aims at the fight target the way a person does: the cursor rests on the opponent instead of
- * tracking them, and only glides back toward the centre of their hitbox once strafing pushes that
- * hitbox close to the edge of the view. Corrections are closed-loop through [RotationController],
+ * tracking them, and only the [adjusting] state — entered when the cursor drifts off the hover
+ * band or loses the hitbox — glides it back toward an offset point near the centre of their
+ * hitbox, never perfectly centred. Corrections are closed-loop through [RotationController],
  * whose smoothing and drift layers shape every glide.
  *
  * Geometry is angular: how far the view points off the hitbox centre is measured in units of the
@@ -39,11 +40,18 @@ object CombatAim {
     /** Cursor within this fraction of the apparent radius counts as centred (hovering). */
     const val HOVER_ENTER: Double = 0.25
 
-    /** Cursor beyond this fraction — near the apparent edge — triggers a glide back to centre. */
+    /** Cursor beyond this fraction — near the apparent edge — engages the adjust-aim state. */
     const val HOVER_EXIT: Double = 0.70
 
-    /** Beyond this many apparent radii off centre the correction becomes a fast reacquire glance. */
+    /** Beyond this many apparent radii off centre the cursor has lost the hitbox entirely. */
     const val REACQUIRE_RATIO: Double = 1.0
+
+    /** Settle-point offset bounds, in signed apparent radii, rolled once per adjustment. */
+    const val ADJUST_OFFSET_MIN_FRACTION: Double = 0.10
+    const val ADJUST_OFFSET_MAX_FRACTION: Double = 0.45
+
+    /** Extra apparent-radii of slack before the adjust state counts its offset point as reached. */
+    const val ADJUST_SETTLE_MARGIN: Double = 0.10
 
     /** Glide speed bounds, deg/s, rolled once per correction event. */
     const val RECENTER_MIN_RATE_DEG_PER_SEC: Double = 260.0
@@ -51,9 +59,6 @@ object CombatAim {
 
     /** Speed, deg/s, when the cursor has lost the target entirely. */
     const val REACQUIRE_RATE_DEG_PER_SEC: Double = 540.0
-
-    /** Glides may carry past the centre by up to this fraction of the apparent radius, rolled per event. */
-    const val OVERSHOOT_MAX_FRACTION: Double = 0.15
 
     /** Floor for the apparent radius, deg, so distant targets cannot make the ratios explode. */
     const val MIN_APPARENT_RADIUS_DEG: Double = 1.5
@@ -72,14 +77,17 @@ object CombatAim {
     const val NUDGE_RATE_DEG_PER_SEC: Double = 60.0
 
     /**
-     * False right after arming so the first update snaps onto the target, then true whenever the
-     * cursor rests inside [HOVER_ENTER].
+     * The adjust-aim state. False right after arming so the first update engages it and snaps
+     * onto the target; thereafter it turns on whenever the cursor drifts out of the hover band
+     * or off the hitbox, and turns off once the settle point is reached.
      */
-    private var hovering = false
+    private var adjusting = false
 
-    /** Per-correction-event rolls: turn speed and how far to carry past the centre. */
+    /** Signed settle-point offset for the current adjustment, in apparent radii. */
+    private var adjustOffsetRatio = 0.0
+
+    /** Turn speed rolled when the current adjustment engaged, deg/s. */
     private var eventRate = REACQUIRE_RATE_DEG_PER_SEC
-    private var overshootFraction = 0.0
 
     /** Next nanoTime at which a hover nudge fires. */
     private var nudgeDueNanos = 0L
@@ -133,27 +141,37 @@ object CombatAim {
             val apparentRadius = apparentRadius(box, horiz)
             val offRatio = abs(yawError) / apparentRadius
 
-            if (hovering) {
-                if (offRatio >= HOVER_EXIT) {
-                    beginCorrection(offRatio > REACQUIRE_RATIO)
+            if (!adjusting && offRatio >= HOVER_EXIT) {
+                // Cursor drifted to the hitbox edge or off it entirely: engage the adjust state
+                // and roll where this glide settles — near the centre but never perfectly on it.
+                adjusting = true
+                adjustOffsetRatio = (if (Math.random() < 0.5) -1.0 else 1.0) *
+                    uniform(ADJUST_OFFSET_MIN_FRACTION, ADJUST_OFFSET_MAX_FRACTION)
+                eventRate = if (offRatio > REACQUIRE_RATIO) {
+                    REACQUIRE_RATE_DEG_PER_SEC
                 } else {
-                    val now = System.nanoTime()
-                    if (now >= nudgeDueNanos) {
-                        // Tiny drifts while resting on the target; RotationController's wander animates them.
-                        yawRequest = player.yRot + symmetric(NUDGE_MAX_YAW_DEG).toFloat()
-                        rate = NUDGE_RATE_DEG_PER_SEC
-                        armNextNudge(now)
-                    }
+                    uniform(RECENTER_MIN_RATE_DEG_PER_SEC, RECENTER_MAX_RATE_DEG_PER_SEC)
                 }
-            } else if (offRatio <= HOVER_ENTER) {
-                hovering = true
+            } else if (adjusting && offRatio <= abs(adjustOffsetRatio) + ADJUST_SETTLE_MARGIN) {
+                // Settle point reached: the adjust state releases and hover nudges resume.
+                adjusting = false
                 armNextNudge(System.nanoTime())
             }
 
-            if (!hovering) {
-                val overshootDeg = sign(yawError) * overshootFraction * apparentRadius
-                yawRequest = Mth.wrapDegrees(yawToCentre + overshootDeg.toFloat())
-                rate = eventRate
+            if (adjusting) {
+                yawRequest = Mth.wrapDegrees(
+                    yawToCentre + (adjustOffsetRatio * apparentRadius).toFloat(),
+                )
+                // If the target bolts mid-glide, finish this frame's request at reacquire speed.
+                rate = if (offRatio > REACQUIRE_RATIO) REACQUIRE_RATE_DEG_PER_SEC else eventRate
+            } else {
+                val now = System.nanoTime()
+                if (now >= nudgeDueNanos) {
+                    // Tiny drifts while resting on the target; RotationController's wander animates them.
+                    yawRequest = player.yRot + symmetric(NUDGE_MAX_YAW_DEG).toFloat()
+                    rate = NUDGE_RATE_DEG_PER_SEC
+                    armNextNudge(now)
+                }
             }
         }
 
@@ -162,21 +180,10 @@ object CombatAim {
     }
 
     fun reset() {
-        hovering = false
+        adjusting = false
+        adjustOffsetRatio = 0.0
         eventRate = REACQUIRE_RATE_DEG_PER_SEC
-        overshootFraction = 0.0
         nudgeDueNanos = 0L
-    }
-
-    /** Rolls the speed and overshoot for one correction, fast when the cursor lost the target. */
-    private fun beginCorrection(reacquire: Boolean) {
-        hovering = false
-        eventRate = if (reacquire) {
-            REACQUIRE_RATE_DEG_PER_SEC
-        } else {
-            uniform(RECENTER_MIN_RATE_DEG_PER_SEC, RECENTER_MAX_RATE_DEG_PER_SEC)
-        }
-        overshootFraction = uniform(0.0, OVERSHOOT_MAX_FRACTION)
     }
 
     private fun armNextNudge(now: Long) {
