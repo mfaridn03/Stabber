@@ -105,6 +105,15 @@ object CombatAim {
     /** Reference index of difficulty at which the flick ceiling applies at full sampled speed. */
     const val FITTS_REF_ID: Double = 4.0
 
+    /** Peak wander of the tracking bandwidth, as a fraction of its base value. */
+    const val TRACK_BANDWIDTH_WANDER: Double = 0.25
+
+    /** Floor for the wandering tracking bandwidth, per second. */
+    const val TRACK_BANDWIDTH_MIN_PER_S: Double = 8.0
+
+    /** Ceiling for the wandering tracking bandwidth, per second. */
+    const val TRACK_BANDWIDTH_MAX_PER_S: Double = 20.0
+
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
@@ -176,6 +185,9 @@ object CombatAim {
     /** Per-axis drift wanderers resampled at acquisition; null until first acquisition. */
     private val axisDrifts = arrayOfNulls<AxisDrift>(3)
 
+    /** Wanderer modulating the tracking bandwidth so pursuit tightens and loosens organically. */
+    private var trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
+
     fun update(minecraft: Minecraft, partialTick: Float) {
         val player = minecraft.player ?: return
         val level = minecraft.level ?: return
@@ -195,6 +207,7 @@ object CombatAim {
             yawSpeedBias = uniform(YAW_BIAS_MIN, YAW_BIAS_MAX)
             deadzoneYawScale = uniform(DEADZONE_YAW_SCALE_MIN, DEADZONE_YAW_SCALE_MAX)
             sampleAimOffset(target)
+            trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
             armFlick()
             lastAimNanos = 0L
         }
@@ -323,8 +336,12 @@ object CombatAim {
             armFlick()
         }
 
-        // Lagged tracking filter — also serves as the settle-back after an overshoot.
-        val alpha = (1.0 - exp(-TRACK_BANDWIDTH_PER_S * dtSeconds)).toFloat()
+        // Lagged tracking filter — also serves as the settle-back after an overshoot. Its
+        // bandwidth wanders so pursuit tightens and loosens like a person's attention.
+        val bandwidth =
+            (TRACK_BANDWIDTH_PER_S * (1.0 + trackBandwidthDrift.at(elapsedSeconds)))
+                .coerceIn(TRACK_BANDWIDTH_MIN_PER_S, TRACK_BANDWIDTH_MAX_PER_S)
+        val alpha = (1.0 - exp(-bandwidth * dtSeconds)).toFloat()
         trackYaw += Mth.wrapDegrees(yaw - trackYaw) * alpha
         trackPitch += (pitch - trackPitch) * alpha
         RotationController.rotateTo(
@@ -386,7 +403,7 @@ object CombatAim {
             val limit = maxOf(halfExtents[axis] - AIM_EDGE_MARGIN_BLOCKS, 0.0)
             anchorOffset[axis] =
                 (halfExtents[axis] * AIM_SIGMA_OF_HALF_EXTENT * gaussian()).coerceIn(-limit, limit)
-            axisDrifts[axis] = AxisDrift(Random.nextLong())
+            axisDrifts[axis] = AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS)
         }
     }
 
@@ -400,11 +417,11 @@ object CombatAim {
     private fun uniform(min: Double, max: Double): Double = min + Math.random() * (max - min)
 
     /**
-     * Smooth pseudo-random wander in [-1, 1]: a fixed set of detuned sine waves whose phases and
-     * frequency multipliers are drawn from a per-acquisition seed. Cheap, continuous everywhere,
-     * and never repeats within a fight.
+     * Smooth pseudo-random wander in [-peakAmplitude, peakAmplitude]: a fixed set of detuned sine
+     * waves whose phases and frequency multipliers are drawn from a per-acquisition seed. Cheap,
+     * continuous everywhere, and never repeats within a fight.
      */
-    private class AxisDrift(seed: Long) {
+    private class AxisDrift(seed: Long, private val peakAmplitude: Double) {
         private data class Wave(val omega: Double, val amplitude: Double, val phase: Double)
 
         private val waves = Array(DRIFT_WAVES_PER_AXIS) { index ->
@@ -412,7 +429,7 @@ object CombatAim {
             Wave(
                 omega = 2.0 * Math.PI * DRIFT_FREQUENCY_HZ *
                     (index + 1) * (0.7 + 0.6 * random.nextDouble()),
-                amplitude = (DRIFT_AMPLITUDE_BLOCKS / DRIFT_WAVES_PER_AXIS) *
+                amplitude = (peakAmplitude / DRIFT_WAVES_PER_AXIS) *
                     (0.6 + 0.4 * random.nextDouble()),
                 phase = random.nextDouble() * 2.0 * Math.PI,
             )
