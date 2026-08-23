@@ -8,6 +8,7 @@ import net.minecraft.util.Mth
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.phys.Vec3
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
@@ -100,6 +101,9 @@ object CombatAim {
 
     /** Flicks shorter than this skip the overshoot entirely, degrees. */
     const val OVERSHOOT_MIN_DISTANCE_DEG: Double = 20.0
+
+    /** Reference index of difficulty at which the flick ceiling applies at full sampled speed. */
+    const val FITTS_REF_ID: Double = 4.0
 
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
@@ -285,8 +289,32 @@ object CombatAim {
             prevApexDistance = apexDistance
 
             if (!crossedApex && apexDistance > TRACK_ENTER_DEG) {
+                // Fitts-inspired pacing: the harder the aim (big angle onto a small apparent
+                // target), the lower the speed ceiling, so time-to-target grows with the log of
+                // distance over size instead of staying flat.
+                val halfDiagonal =
+                    sqrt(
+                        halfExtents[0] * halfExtents[0] +
+                            halfExtents[1] * halfExtents[1] +
+                            halfExtents[2] * halfExtents[2],
+                    )
+                val viewDistance = sqrt(dx * dx + dy * dy + dz * dz)
+                val angularWidthDeg =
+                    Math.toDegrees(atan2(halfDiagonal, maxOf(viewDistance, 0.5)))
+                val difficultyIndex =
+                    if (angularWidthDeg < 1.0e-3) {
+                        FITTS_REF_ID
+                    } else {
+                        2.0 * apexDistance / angularWidthDeg
+                    }
+                val fittsCeiling =
+                    flickSpeedDegPerSec / sqrt(maxOf(difficultyIndex / FITTS_REF_ID, 1.0))
+
                 val stepCap = (apexDistance * FLICK_GAIN_PER_S)
-                    .coerceIn(FLICK_MIN_STEP_DEG_PER_S, flickSpeedDegPerSec)
+                    .coerceIn(
+                        FLICK_MIN_STEP_DEG_PER_S,
+                        minOf(flickSpeedDegPerSec, fittsCeiling),
+                    )
                 RotationController.rotateTo(apexYaw, apexPitch, stepCap * yawSpeedBias, stepCap)
                 return
             }
