@@ -29,7 +29,7 @@ import kotlin.random.Random
  * past the target and then settles back, switching to a soft lagged tracking filter once close,
  * and back to a fresh flick if the target escapes. Moving targets are only partially led: the
  * aim point shifts ahead by a noisy fraction of their motion, so tracking stays slightly
- * trailing. While the view
+ * trailing. Hand tremor rides on the tracked aim as sub-degree noise. While the view
  * error sits inside a sampled deadzone no corrections are issued at all; the deadzone tightens
  * for a short window after each synthetic click so swings still land on target.
  */
@@ -131,6 +131,18 @@ object CombatAim {
     /** Peak wander of the lead strength, as a fraction of the sampled lead. */
     const val PREDICT_LEAD_WOBBLE: Double = 0.15
 
+    /** Lower bound of the sampled hand-tremor amplitude per axis, degrees. */
+    const val TREMOR_MIN_DEG: Double = 0.08
+
+    /** Upper bound of the sampled hand-tremor amplitude, kept under half a degree. */
+    const val TREMOR_MAX_DEG: Double = 0.30
+
+    /** Base frequency of the tremor waves; components detune above this into the 3-15 Hz band. */
+    const val TREMOR_BASE_FREQ_HZ: Double = 4.0
+
+    /** Tremor scale while attacking — a person squeezing off a click steadies their hand. */
+    const val TREMOR_ATTACK_SCALE: Double = 0.5
+
     /** Sigma of the gaussian anchor offset, as a fraction of the hitbox half-extent per axis. */
     const val AIM_SIGMA_OF_HALF_EXTENT: Double = 0.35
 
@@ -203,13 +215,15 @@ object CombatAim {
     private val axisDrifts = arrayOfNulls<AxisDrift>(3)
 
     /** Wanderer modulating the tracking bandwidth so pursuit tightens and loosens organically. */
-    private var trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
+    private var trackBandwidthDrift =
+        AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER, DRIFT_FREQUENCY_HZ)
 
     /** Per-acquisition fraction of target motion the aim point leads by. */
     private var leadFraction = (PREDICT_LEAD_MIN_FRACTION + PREDICT_LEAD_MAX_FRACTION) / 2.0
 
     /** Wanderer breathing life into the lead strength so it is never a constant multiplier. */
-    private var leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE)
+    private var leadWobbleDrift =
+        AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE, DRIFT_FREQUENCY_HZ)
 
     /** Interpolated target position of the previous frame; NaN forces a fresh estimate. */
     private var prevInterpX = Double.NaN
@@ -218,6 +232,12 @@ object CombatAim {
     /** Smoothed horizontal target velocity estimate, blocks per second. */
     private var smoothedVelX = 0.0
     private var smoothedVelZ = 0.0
+
+    /** Per-axis hand tremor wanderers resampled at acquisition with their own amplitudes. */
+    private var tremorYawDrift =
+        AxisDrift(Random.nextLong(), uniform(TREMOR_MIN_DEG, TREMOR_MAX_DEG), TREMOR_BASE_FREQ_HZ)
+    private var tremorPitchDrift =
+        AxisDrift(Random.nextLong(), uniform(TREMOR_MIN_DEG, TREMOR_MAX_DEG), TREMOR_BASE_FREQ_HZ)
 
     fun update(minecraft: Minecraft, partialTick: Float) {
         val player = minecraft.player ?: return
@@ -238,9 +258,14 @@ object CombatAim {
             yawSpeedBias = uniform(YAW_BIAS_MIN, YAW_BIAS_MAX)
             deadzoneYawScale = uniform(DEADZONE_YAW_SCALE_MIN, DEADZONE_YAW_SCALE_MAX)
             sampleAimOffset(target)
-            trackBandwidthDrift = AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER)
+            trackBandwidthDrift =
+                AxisDrift(Random.nextLong(), TRACK_BANDWIDTH_WANDER, DRIFT_FREQUENCY_HZ)
             leadFraction = uniform(PREDICT_LEAD_MIN_FRACTION, PREDICT_LEAD_MAX_FRACTION)
-            leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE)
+            leadWobbleDrift = AxisDrift(Random.nextLong(), PREDICT_LEAD_WOBBLE, DRIFT_FREQUENCY_HZ)
+            tremorYawDrift =
+                AxisDrift(Random.nextLong(), uniform(TREMOR_MIN_DEG, TREMOR_MAX_DEG), TREMOR_BASE_FREQ_HZ)
+            tremorPitchDrift =
+                AxisDrift(Random.nextLong(), uniform(TREMOR_MIN_DEG, TREMOR_MAX_DEG), TREMOR_BASE_FREQ_HZ)
             // A new target is a new motion model; drop the stale velocity estimate.
             prevInterpX = Double.NaN
             smoothedVelX = 0.0
@@ -393,16 +418,19 @@ object CombatAim {
         }
 
         // Lagged tracking filter — also serves as the settle-back after an overshoot. Its
-        // bandwidth wanders so pursuit tightens and loosens like a person's attention.
+        // bandwidth wanders so pursuit tightens and loosens like a person's attention. Hand
+        // tremor rides on top of the filtered reference, applied here at request time so the
+        // low-pass filter cannot smooth it away; a steadying hand halves it during attacks.
         val bandwidth =
             (TRACK_BANDWIDTH_PER_S * (1.0 + trackBandwidthDrift.at(elapsedSeconds)))
                 .coerceIn(TRACK_BANDWIDTH_MIN_PER_S, TRACK_BANDWIDTH_MAX_PER_S)
         val alpha = (1.0 - exp(-bandwidth * dtSeconds)).toFloat()
         trackYaw += Mth.wrapDegrees(yaw - trackYaw) * alpha
         trackPitch += (pitch - trackPitch) * alpha
+        val tremorScale = (if (attacking) TREMOR_ATTACK_SCALE else 1.0).toFloat()
         RotationController.rotateTo(
-            trackYaw,
-            trackPitch,
+            trackYaw + tremorYawDrift.at(elapsedSeconds).toFloat() * tremorScale,
+            trackPitch + tremorPitchDrift.at(elapsedSeconds).toFloat() * tremorScale,
             TRACK_MAX_STEP_DEG_PER_S * yawSpeedBias,
             TRACK_MAX_STEP_DEG_PER_S,
         )
@@ -459,7 +487,7 @@ object CombatAim {
             val limit = maxOf(halfExtents[axis] - AIM_EDGE_MARGIN_BLOCKS, 0.0)
             anchorOffset[axis] =
                 (halfExtents[axis] * AIM_SIGMA_OF_HALF_EXTENT * gaussian()).coerceIn(-limit, limit)
-            axisDrifts[axis] = AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS)
+            axisDrifts[axis] = AxisDrift(Random.nextLong(), DRIFT_AMPLITUDE_BLOCKS, DRIFT_FREQUENCY_HZ)
         }
     }
 
@@ -475,15 +503,20 @@ object CombatAim {
     /**
      * Smooth pseudo-random wander in [-peakAmplitude, peakAmplitude]: a fixed set of detuned sine
      * waves whose phases and frequency multipliers are drawn from a per-acquisition seed. Cheap,
-     * continuous everywhere, and never repeats within a fight.
+     * continuous everywhere, and never repeats within a fight. [baseFrequencyHz] sets the tempo —
+     * slow for aim-point drift, fast for hand tremor.
      */
-    private class AxisDrift(seed: Long, private val peakAmplitude: Double) {
+    private class AxisDrift(
+        seed: Long,
+        private val peakAmplitude: Double,
+        baseFrequencyHz: Double,
+    ) {
         private data class Wave(val omega: Double, val amplitude: Double, val phase: Double)
 
         private val waves = Array(DRIFT_WAVES_PER_AXIS) { index ->
             val random = Random(seed + index)
             Wave(
-                omega = 2.0 * Math.PI * DRIFT_FREQUENCY_HZ *
+                omega = 2.0 * Math.PI * baseFrequencyHz *
                     (index + 1) * (0.7 + 0.6 * random.nextDouble()),
                 amplitude = (peakAmplitude / DRIFT_WAVES_PER_AXIS) *
                     (0.6 + 0.4 * random.nextDouble()),
