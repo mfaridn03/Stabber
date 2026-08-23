@@ -66,15 +66,29 @@ object CombatAim {
     /** Below this horizontal distance the bearing to the centre is meaningless; hold the view. */
     const val MIN_AIM_DISTANCE_XZ: Double = 1.0
 
-    /** Micro-stutter cadence while hovering, seconds between sub-degree nudges. */
-    const val NUDGE_MIN_INTERVAL_S: Double = 0.4
-    const val NUDGE_MAX_INTERVAL_S: Double = 1.2
+    /** Micro-stutter cadence while hovering, seconds between nudges outside of bursts. */
+    const val NUDGE_MIN_INTERVAL_S: Double = 0.3
+    const val NUDGE_MAX_INTERVAL_S: Double = 1.0
 
-    /** Peak size of a hover nudge, deg. */
-    const val NUDGE_MAX_YAW_DEG: Double = 0.18
+    /** Chance a nudge is followed by a quick second one, reading as a flick-and-correct. */
+    const val NUDGE_BURST_CHANCE: Double = 0.70
 
-    /** Degrees per second cap while playing a nudge out. */
-    const val NUDGE_RATE_DEG_PER_SEC: Double = 60.0
+    /** Gap between the two nudges of a burst, seconds. */
+    const val NUDGE_BURST_MIN_GAP_S: Double = 0.12
+    const val NUDGE_BURST_MAX_GAP_S: Double = 0.26
+
+    /** Nudge peak as a fraction of the apparent radius, so it scales with target size on screen. */
+    const val NUDGE_MIN_FRACTION: Double = 0.06
+    const val NUDGE_MAX_FRACTION: Double = 0.16
+
+    /** Absolute yaw safety cap, deg; only bites on small or distant targets, never up close. */
+    const val NUDGE_MAX_YAW_DEG: Double = 2.5
+
+    /** Pitch nudges are slightly gentler than yaw ones; a fraction of the rolled yaw nudge size. */
+    const val NUDGE_PITCH_RATIO: Double = 0.85
+
+    /** Degrees per second cap while playing a nudge out; slow enough that the glide reads. */
+    const val NUDGE_RATE_DEG_PER_SEC: Double = 14.0
 
     /**
      * The adjust-aim state. False right after arming so the first update engages it and snaps
@@ -167,10 +181,28 @@ object CombatAim {
             } else {
                 val now = System.nanoTime()
                 if (now >= nudgeDueNanos) {
-                    // Tiny drifts while resting on the target; RotationController's wander animates them.
-                    yawRequest = player.yRot + symmetric(NUDGE_MAX_YAW_DEG).toFloat()
+                    // Micro offsets while resting on the target: each nudge re-parks the cursor at
+                    // a random point well inside the hitbox (a fraction of its apparent radius,
+                    // absolute-capped only as a far-target safety) — visibly alive up close.
+                    // Anchored to the centre rather than the current view so nudges can never
+                    // accumulate outward.
+                    val reachDeg = (apparentRadius * uniform(NUDGE_MIN_FRACTION, NUDGE_MAX_FRACTION))
+                        .coerceAtMost(NUDGE_MAX_YAW_DEG)
+                    yawRequest = Mth.wrapDegrees(yawToCentre + symmetric(reachDeg).toFloat())
+                    // Only add a pitch component when pitch is settled on its own band, so a
+                    // nudge never interrupts a height correction.
+                    if (abs(pitchError) <= PITCH_REACQUIRE_DEG) {
+                        pitchRequest =
+                            player.xRot + symmetric(reachDeg * NUDGE_PITCH_RATIO).toFloat()
+                    }
                     rate = NUDGE_RATE_DEG_PER_SEC
-                    armNextNudge(now)
+                    // Mostly a lone nudge with a long rest after it; sometimes a quick second
+                    // one follows, which reads as a flick followed by a small correction.
+                    nudgeDueNanos = if (Math.random() < NUDGE_BURST_CHANCE) {
+                        now + (uniform(NUDGE_BURST_MIN_GAP_S, NUDGE_BURST_MAX_GAP_S) * 1.0e9).toLong()
+                    } else {
+                        now + (uniform(NUDGE_MIN_INTERVAL_S, NUDGE_MAX_INTERVAL_S) * 1.0e9).toLong()
+                    }
                 }
             }
         }

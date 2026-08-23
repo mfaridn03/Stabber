@@ -157,9 +157,13 @@ interaction range); only boxes entirely above or below the horizon pull pitch of
 | `OVERSHOOT_MAX_FRACTION` | 0.15 | Glides may carry past centre by up to this fraction of the apparent radius, rolled per event. |
 | `MIN_APPARENT_RADIUS_DEG` | 1.5° | Floor on the apparent radius so distant targets cannot make ratios explode. |
 | `MIN_AIM_DISTANCE_XZ` | 1.0 | Below this horizontal distance bearings are meaningless; hold the view. |
-| `NUDGE_MIN_INTERVAL_S` / `_MAX_` | 0.4–1.2 s | Cadence of sub-degree micro-stutters while hovering. |
-| `NUDGE_MAX_YAW_DEG` | 0.18° | Peak size of a hover nudge. |
-| `NUDGE_RATE_DEG_PER_SEC` | 60 | Turn speed cap while playing a nudge out. |
+| `NUDGE_MIN_INTERVAL_S` / `_MAX_` | 0.6–1.4 s | Cadence of hover nudges outside of bursts. |
+| `NUDGE_BURST_CHANCE` | 0.30 | Chance a nudge is followed by a quick second one (flick-and-correct). |
+| `NUDGE_BURST_MIN_GAP_S` / `_MAX_` | 0.12–0.26 s | Gap between the two nudges of a burst. |
+| `NUDGE_MIN_FRACTION` / `_MAX_` | 0.06–0.16 | Nudge peak as a fraction of the hitbox's apparent radius. |
+| `NUDGE_MAX_YAW_DEG` | 2.5° | Absolute yaw safety cap; only bites on small/distant targets. |
+| `NUDGE_PITCH_RATIO` | 0.85 | Pitch nudge size relative to the rolled yaw nudge size. |
+| `NUDGE_RATE_DEG_PER_SEC` | 14 | Turn speed cap while playing a nudge out. |
 
 Tuning guide:
 
@@ -167,11 +171,13 @@ Tuning guide:
   and/or raising `HOVER_EXIT`.
 - **Eats hits because recentres are too slow?** Raise both `RECENTER_*` rates, or lower `HOVER_EXIT`
   so glides fire earlier.
-- **Looks robotic when strafe-crossing?** Raise `OVERSHOOT_MAX_FRACTION` and widen the rate band.
+- **Looks robotic when strafe-crossing?** Raise `ADJUST_OFFSET_MAX_FRACTION` and widen the rate band.
 - **Aim sits visibly above/below heads?** Lower `PITCH_DEADBAND_DEG` (or raise it if the pitch
   micro-adjustments bother you).
-- **Micro-stutters too visible in recordings?** Lower `NUDGE_MAX_YAW_DEG` or stretch the nudge
-  interval band.
+- **Micro-stutters too visible in recordings?** Lower `NUDGE_MAX_FRACTION` / `NUDGE_MAX_YAW_DEG`
+  or stretch the nudge interval band.
+- **Hover nudges imperceptible?** Raise `NUDGE_MAX_FRACTION` toward 0.08 or slow
+  `NUDGE_RATE_DEG_PER_SEC` so each glide reads longer.
 
 ### Clicks — `HumanClicker.kt`
 
